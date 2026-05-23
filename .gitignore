@@ -16,3 +16,6 @@ Package.resolved
 
 # macOS
 .DS_Store
+
+# Generated Xcode project for the example app (reproduce with `xcodegen generate`)
+Examples/ShelfScout/ShelfScout.xcodeproj/
