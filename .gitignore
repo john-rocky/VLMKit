@@ -1,0 +1,18 @@
+# Swift Package Manager / Xcode build output
+.build/
+.swiftpm/
+DerivedData/
+*.xcodeproj/xcuserdata/
+*.xcworkspace/xcuserdata/
+Package.resolved
+
+# Model weights & compiled models (never commit — download at runtime)
+*.safetensors
+*.gguf
+*.bin
+*.mlmodel
+*.mlmodelc
+*.mlpackage
+
+# macOS
+.DS_Store

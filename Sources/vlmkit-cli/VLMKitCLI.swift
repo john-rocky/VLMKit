@@ -1,0 +1,215 @@
+import Foundation
+import VLMKit
+
+/// Command-line driver for VLMKit — loads a model on this Mac and runs a recipe
+/// on an image. Doubles as the benchmark tool (`bench` prints tokens/sec).
+///
+/// Usage:
+///   vlmkit-cli describe  <image>                       freeform description (streamed)
+///   vlmkit-cli shelf     <image> [--rows N] [--cols N] α1 shelf inventory → JSON
+///   vlmkit-cli form      <image> --fields "a,b,c"      α7 form extraction → JSON
+///   vlmkit-cli checklist <image> --items "a;b;c"       α11 checklist → JSON
+///   vlmkit-cli bench     <image> [--runs N]            decode-speed benchmark
+///
+/// Global: --model qwen3-4b | qwen3-8b | smolvlm2   (default: qwen3-4b)
+@main
+struct VLMKitCLI {
+    static func main() async {
+        do {
+            try await run(Array(CommandLine.arguments.dropFirst()))
+        } catch {
+            log("Error: \(error)")
+            exit(1)
+        }
+    }
+
+    static func run(_ arguments: [String]) async throws {
+        guard let command = arguments.first else { return printUsage() }
+        let options = Options(Array(arguments.dropFirst()))
+        switch command {
+        case "describe": try await describe(options)
+        case "shelf": try await shelf(options)
+        case "form": try await form(options)
+        case "checklist": try await checklist(options)
+        case "bench": try await bench(options)
+        case "help", "-h", "--help": printUsage()
+        default:
+            log("Unknown command: \(command)\n")
+            printUsage()
+            exit(1)
+        }
+    }
+
+    // MARK: - Commands
+
+    static func describe(_ options: Options) async throws {
+        let image = try loadImage(options)
+        let runner = try await makeRunner(options)
+        for try await chunk in runner.backend.stream(prompt: "Describe this image in detail.", images: [image]) {
+            FileHandle.standardOutput.write(Data(chunk.utf8))
+        }
+        print("")
+    }
+
+    static func shelf(_ options: Options) async throws {
+        let image = try loadImage(options)
+        let runner = try await makeRunner(options)
+        let rows = options.int("rows", default: 3)
+        let columns = options.int("cols", default: 3)
+        log("Scanning \(rows)×\(columns) tiles…")
+        let report = try await ShelfInventory.run(on: image, runner: runner, rows: rows, columns: columns) { done, total in
+            log("  tile \(done)/\(total)")
+        }
+        printJSON(report)
+    }
+
+    static func form(_ options: Options) async throws {
+        let image = try loadImage(options)
+        guard let fieldsArg = options.string("fields") else { throw CLIError.missing("--fields \"name1,name2,…\"") }
+        let runner = try await makeRunner(options)
+        let fields = fieldsArg
+            .split(separator: ",")
+            .map { FormField(String($0).trimmingCharacters(in: .whitespaces)) }
+        let result = try await FormExtraction.extract(fields: fields, from: image, runner: runner)
+        printJSON(result)
+    }
+
+    static func checklist(_ options: Options) async throws {
+        let image = try loadImage(options)
+        guard let itemsArg = options.string("items") else { throw CLIError.missing("--items \"req1;req2;…\"") }
+        let runner = try await makeRunner(options)
+        let items = itemsArg
+            .split(separator: ";")
+            .enumerated()
+            .map { index, requirement in
+                ChecklistItem(id: "item\(index + 1)", requirement: String(requirement).trimmingCharacters(in: .whitespaces))
+            }
+        log("Evaluating \(items.count) checklist item(s)…")
+        let report = try await Checklist.evaluate(items: items, on: image, runner: runner) { done, total in
+            log("  item \(done)/\(total)")
+        }
+        printJSON(report)
+    }
+
+    static func bench(_ options: Options) async throws {
+        let image = try loadImage(options)
+        let runner = try await makeRunner(options)
+        let runs = options.int("runs", default: 3)
+        log("Benchmarking \(runner.backend.profile.displayName) over \(runs) run(s)…")
+        var speeds: [Double] = []
+        for run in 1...runs {
+            let result = try await runner.runText(
+                instruction: "Describe this image in detail.",
+                images: [image],
+                options: GenerationOptions(maxTokens: 200, temperature: 0.0)
+            )
+            if let stats = result.stats {
+                speeds.append(stats.tokensPerSecond)
+                log("  run \(run): \(fmt(stats.tokensPerSecond)) tok/s  (\(stats.generatedTokens) tokens, \(fmt(stats.totalSeconds))s)")
+            } else {
+                log("  run \(run): no stats reported")
+            }
+        }
+        guard !speeds.isEmpty else { return }
+        let average = speeds.reduce(0, +) / Double(speeds.count)
+        print("\nModel: \(runner.backend.profile.displayName)")
+        print("Average decode speed: \(fmt(average)) tok/s over \(speeds.count) run(s)")
+    }
+
+    // MARK: - Helpers
+
+    static func profile(_ options: Options) -> ModelProfile {
+        switch options.string("model") ?? "" {
+        case "qwen3-8b": .qwen3VL8B
+        case "smolvlm2": .smolVLM2
+        default: .qwen3VL4B
+        }
+    }
+
+    static func makeRunner(_ options: Options) async throws -> VLMRunner {
+        let backend = MLXSwiftBackend(profile: profile(options))
+        log("Loading \(backend.profile.displayName)…")
+        try await backend.load { fraction in
+            FileHandle.standardError.write(Data("\rDownloading: \(Int(fraction * 100))%   ".utf8))
+        }
+        log("")
+        return VLMRunner(backend: backend)
+    }
+
+    static func loadImage(_ options: Options) throws -> VLMImage {
+        guard let path = options.imagePath else { throw CLIError.missing("<image>") }
+        return try VLMImage(contentsOf: URL(fileURLWithPath: path))
+    }
+
+    static func printJSON<T: Encodable>(_ value: T) {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
+        if let data = try? encoder.encode(value), let string = String(data: data, encoding: .utf8) {
+            print(string)
+        }
+    }
+
+    static func log(_ message: String) {
+        FileHandle.standardError.write(Data((message + "\n").utf8))
+    }
+
+    static func fmt(_ value: Double) -> String { String(format: "%.1f", value) }
+
+    static func printUsage() {
+        print("""
+        VLMKit CLI — structured VLM on Apple Silicon
+
+        USAGE:
+          vlmkit-cli describe  <image>                       Freeform description (streamed)
+          vlmkit-cli shelf     <image> [--rows N] [--cols N] α1 Shelf inventory → JSON
+          vlmkit-cli form      <image> --fields "a,b,c"      α7 Form extraction → JSON
+          vlmkit-cli checklist <image> --items "a;b;c"       α11 Checklist → JSON
+          vlmkit-cli bench     <image> [--runs N]            Decode-speed benchmark
+
+        GLOBAL:
+          --model qwen3-4b | qwen3-8b | smolvlm2             Model preset (default: qwen3-4b)
+
+        The model downloads from Hugging Face on first run and is cached.
+        Requires an Apple-Silicon Mac (MLX does not run on the iOS Simulator).
+        """)
+    }
+}
+
+/// Minimal positional + `--flag value` argument parser (no external deps).
+struct Options {
+    private(set) var positional: [String] = []
+    private(set) var flags: [String: String] = [:]
+
+    init(_ arguments: [String]) {
+        var index = 0
+        while index < arguments.count {
+            let argument = arguments[index]
+            if argument.hasPrefix("--") {
+                let key = String(argument.dropFirst(2))
+                if index + 1 < arguments.count, !arguments[index + 1].hasPrefix("--") {
+                    flags[key] = arguments[index + 1]
+                    index += 2
+                } else {
+                    flags[key] = ""
+                    index += 1
+                }
+            } else {
+                positional.append(argument)
+                index += 1
+            }
+        }
+    }
+
+    var imagePath: String? { positional.first }
+    func string(_ key: String) -> String? { flags[key] }
+    func int(_ key: String, default fallback: Int) -> Int { flags[key].flatMap(Int.init) ?? fallback }
+}
+
+enum CLIError: Error, CustomStringConvertible {
+    case missing(String)
+    var description: String {
+        switch self {
+        case .missing(let what): "missing required argument: \(what)"
+        }
+    }
+}
