@@ -7,6 +7,7 @@ import VLMKit
 /// Usage:
 ///   vlmkit-cli describe  <image>                       freeform description (streamed)
 ///   vlmkit-cli shelf     <image> [--rows N] [--cols N] α1 shelf inventory → JSON
+///   vlmkit-cli crowd     <image> [--max N] [--ask "Q"]  α2 per-person VLM query → JSON
 ///   vlmkit-cli form      <image> --fields "a,b,c"      α7 form extraction → JSON
 ///   vlmkit-cli checklist <image> --items "a;b;c"       α11 checklist → JSON
 ///   vlmkit-cli bench     <image> [--runs N]            decode-speed benchmark
@@ -29,6 +30,7 @@ struct VLMKitCLI {
         switch command {
         case "describe": try await describe(options)
         case "shelf": try await shelf(options)
+        case "crowd": try await crowd(options)
         case "form": try await form(options)
         case "checklist": try await checklist(options)
         case "bench": try await bench(options)
@@ -45,7 +47,8 @@ struct VLMKitCLI {
     static func describe(_ options: Options) async throws {
         let image = try loadImage(options)
         let runner = try await makeRunner(options)
-        for try await chunk in runner.backend.stream(prompt: "Describe this image in detail.", images: [image]) {
+        let prompt = options.string("prompt") ?? "Describe this image in detail."
+        for try await chunk in runner.backend.stream(prompt: prompt, images: [image]) {
             FileHandle.standardOutput.write(Data(chunk.utf8))
         }
         print("")
@@ -59,6 +62,18 @@ struct VLMKitCLI {
         log("Scanning \(rows)×\(columns) tiles…")
         let report = try await ShelfInventory.run(on: image, runner: runner, rows: rows, columns: columns) { done, total in
             log("  tile \(done)/\(total)")
+        }
+        printJSON(report)
+    }
+
+    static func crowd(_ options: Options) async throws {
+        let image = try loadImage(options)
+        let runner = try await makeRunner(options)
+        let maxPeople = options.int("max", default: 24)
+        let question = options.string("ask")
+        log("Detecting people with Vision, then \(question.map { "asking \"\($0)\"" } ?? "profiling each") with the VLM…")
+        let report = try await CrowdAnalytics.run(on: image, runner: runner, maxPeople: maxPeople, question: question) { done, total in
+            log("  person \(done)/\(total)")
         }
         printJSON(report)
     }
@@ -128,8 +143,9 @@ struct VLMKitCLI {
 
     static func makeRunner(_ options: Options) async throws -> VLMRunner {
         let backend = MLXSwiftBackend(profile: profile(options))
-        log("Loading \(backend.profile.displayName)…")
-        try await backend.load { fraction in
+        let localModel = options.string("model-dir").map { URL(fileURLWithPath: $0) }
+        log("Loading \(backend.profile.displayName)\(localModel.map { " from \($0.path)" } ?? "")…")
+        try await backend.load(from: localModel) { fraction in
             FileHandle.standardError.write(Data("\rDownloading: \(Int(fraction * 100))%   ".utf8))
         }
         log("")
@@ -160,14 +176,16 @@ struct VLMKitCLI {
         VLMKit CLI — structured VLM on Apple Silicon
 
         USAGE:
-          vlmkit-cli describe  <image>                       Freeform description (streamed)
+          vlmkit-cli describe  <image> [--prompt "..."]      Freeform description (streamed)
           vlmkit-cli shelf     <image> [--rows N] [--cols N] α1 Shelf inventory → JSON
+          vlmkit-cli crowd     <image> [--max N] [--ask "Q"]  α2 Crowd / per-person query → JSON
           vlmkit-cli form      <image> --fields "a,b,c"      α7 Form extraction → JSON
           vlmkit-cli checklist <image> --items "a;b;c"       α11 Checklist → JSON
           vlmkit-cli bench     <image> [--runs N]            Decode-speed benchmark
 
         GLOBAL:
           --model qwen3-4b | qwen3-8b | smolvlm2             Model preset (default: qwen3-4b)
+          --model-dir <path>                                 Load a local model directory (skips download)
 
         The model downloads from Hugging Face on first run and is cached.
         Requires an Apple-Silicon Mac (MLX does not run on the iOS Simulator).

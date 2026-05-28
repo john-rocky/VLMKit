@@ -1,0 +1,46 @@
+import CoreGraphics
+import Foundation
+
+/// The recipe-agnostic shape the demo shell renders. Each demo maps its own report
+/// into this: a headline number, a list of labeled rows, and per-detection boxes.
+/// Rows and detections are linked by `key`, so tapping one highlights the other —
+/// VLMKit's "finger to point" payoff, kept independent of any single recipe.
+struct DemoResult: Sendable {
+    let headline: Headline
+    let rows: [AggregateRow]
+    let detections: [Detection]
+
+    struct Headline: Sendable {
+        let value: Int
+        let unit: String          // "items" / "people"
+    }
+}
+
+/// One row of the result list. `key` links it to its detection box(es).
+struct AggregateRow: Identifiable, Sendable {
+    let key: String
+    let label: String             // primary text (product name / person summary)
+    let trailing: String?         // short, right-aligned (α1: "×3")
+    let subtitle: String?         // longer, wraps below (α2: the detailed description)
+    var id: String { key }
+}
+
+/// One located thing on the photo. `key` links back to its row(s); `label` is the
+/// callout shown when it is highlighted. `box` is image-normalized, top-left origin.
+struct Detection: Identifiable, Sendable {
+    let id: UUID
+    let key: String
+    let label: String           // short title shown in the callout
+    let detail: String?         // longer body streamed into the callout (α2: the description)
+    let box: CGRect
+
+    // Explicit id so translation can rebuild a detection with the SAME identity
+    // (a fresh UUID each render would restart the typewriter / break ForEach).
+    init(id: UUID = UUID(), key: String, label: String, detail: String?, box: CGRect) {
+        self.id = id
+        self.key = key
+        self.label = label
+        self.detail = detail
+        self.box = box
+    }
+}

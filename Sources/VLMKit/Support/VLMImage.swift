@@ -33,11 +33,25 @@ public struct VLMImage: @unchecked Sendable {
         else {
             throw VLMKitError.imageLoadFailed(url)
         }
-        self.cgImage = image
+        // Camera photos store rotation as an EXIF orientation tag, not rotated
+        // pixels. Bake it in so crops/regions and the VLM all see it upright.
+        let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any]
+        let exif = (properties?[kCGImagePropertyOrientation] as? UInt32) ?? 1
+        self.cgImage = Self.uprighted(image, exifOrientation: exif)
     }
 
     /// A `CIImage` view, used when handing the image to an MLX backend.
     public var ciImage: CIImage { CIImage(cgImage: cgImage) }
+
+    /// Bake an EXIF orientation (1...8) into pixels, returning an upright image.
+    /// Orientation 1 (already upright) is returned unchanged.
+    static func uprighted(_ cgImage: CGImage, exifOrientation: UInt32) -> CGImage {
+        guard exifOrientation != 1 else { return cgImage }
+        let oriented = CIImage(cgImage: cgImage).oriented(forExifOrientation: Int32(exifOrientation))
+        return orientationContext.createCGImage(oriented, from: oriented.extent) ?? cgImage
+    }
+
+    private static let orientationContext = CIContext()
 
     /// Crop to a normalized rectangle (top-left origin). Returns `self` if the
     /// crop is empty or out of bounds.
@@ -60,7 +74,26 @@ public struct VLMImage: @unchecked Sendable {
 public extension VLMImage {
     init?(uiImage: UIImage) {
         guard let cgImage = uiImage.cgImage else { return nil }
-        self.init(cgImage: cgImage)
+        // `UIImage.cgImage` is the raw, unrotated buffer; apply the image's
+        // orientation so the stored pixels are upright.
+        let exif = CGImagePropertyOrientation(uiImage.imageOrientation)
+        self.init(cgImage: VLMImage.uprighted(cgImage, exifOrientation: exif.rawValue))
+    }
+}
+
+private extension CGImagePropertyOrientation {
+    init(_ orientation: UIImage.Orientation) {
+        switch orientation {
+        case .up: self = .up
+        case .down: self = .down
+        case .left: self = .left
+        case .right: self = .right
+        case .upMirrored: self = .upMirrored
+        case .downMirrored: self = .downMirrored
+        case .leftMirrored: self = .leftMirrored
+        case .rightMirrored: self = .rightMirrored
+        @unknown default: self = .up
+        }
     }
 }
 #elseif canImport(AppKit)

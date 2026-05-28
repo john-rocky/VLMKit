@@ -1,14 +1,29 @@
-# ShelfScout
+# VLMKit — on-device demos
 
-A one-screen iOS showcase for VLMKit's **α1 Shelf Inventory** recipe. Point the
-camera at a retail shelf (or pick a photo); the recipe tiles the image, fans out
-one VLM call per tile, and aggregates a product count — entirely on-device.
+A one-screen iOS showcase for VLMKit's structured fan-out recipes. Pick a demo,
+give it a photo, and watch an Apple on-device framework pair with a local VLM to
+turn pixels into structured, point-able results — entirely on-device.
+
+Two demos ship behind a picker, on one shared shell (photo on top, structured
+result below, with two-way result ↔ box highlighting):
+
+- **α1 Shelf Inventory** — tiles the image (grid fan-out), runs one VLM call per
+  tile, and aggregates a product count with per-product boxes.
+- **α2 Crowd Analytics** — **Vision** (`VNDetectHumanRectanglesRequest`) detects
+  each person, then one VLM call profiles each one with a detailed description.
+  Vision says *where* the people are; the VLM says *who* they are. This Apple-
+  framework × VLM pairing is VLMKit's core idea.
+
+> The app is named **VLMKit** on the home screen. Its Xcode project still lives in
+> `Examples/ShelfScout/` and the bundle id stays `com.vlmkit.example.shelfscout`
+> (so a model sideloaded into the existing app container is preserved).
 
 ## Requirements
 
 - Xcode 16+
 - A **real iOS device** (A-series / M-series). MLX uses the Metal GPU and does
-  **not** run on the iOS Simulator.
+  **not** run on the iOS Simulator. Vision detection is also unreliable on the
+  Simulator.
 - [XcodeGen](https://github.com/yonaskolb/XcodeGen) — `brew install xcodegen`
 
 ## Run
@@ -24,7 +39,26 @@ connected device, and Run. On first launch the app downloads the default model
 (Qwen3-VL-4B, ~3 GB) from Hugging Face and caches it.
 
 > Tip: for a smaller, faster first test, change `.qwen3VL4B` to `.smolVLM2` in
-> `Sources/ScanViewModel.swift` (~1 GB).
+> `Sources/DemoViewModel.swift` (~1 GB).
+
+## Sideloading the model via USB (debug)
+
+To avoid re-downloading the model on every clean install while debugging, push
+it onto the device once. If `Documents/Model/config.json` is present, the app
+loads the model from there and skips the Hugging Face download entirely.
+
+1. On your Mac, download the full model repo into a folder named `Model`:
+   ```sh
+   pip install -U "huggingface_hub[hf_xet]"
+   hf download lmstudio-community/Qwen3-VL-4B-Instruct-MLX-4bit --local-dir Model
+   ```
+2. Connect the device via USB, open it in Finder, and select the **Files** tab.
+   Drag the `Model` folder onto the **VLMKit** app.
+3. Relaunch the app — it now loads the local model (no download).
+
+The folder must be named `Model` and hold the full repo snapshot (`config.json`,
+`*.safetensors`, and the tokenizer files). Delete it to return to the download
+path. File sharing is enabled via `UIFileSharingEnabled` in `project.yml`.
 
 ## Manual setup (without XcodeGen)
 

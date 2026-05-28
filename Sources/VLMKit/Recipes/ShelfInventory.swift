@@ -1,8 +1,17 @@
+import CoreGraphics
 import Foundation
 
 public struct ShelfProduct: Codable, Sendable {
     public let name: String
     public let brand: String?
+    /// Bounding box as the VLM returns it: `[x1, y1, x2, y2]` in 0...1000,
+    /// normalized to the *tile* it was detected in. `nil` if not reported.
+    public let bbox2d: [Double]?
+
+    enum CodingKeys: String, CodingKey {
+        case name, brand
+        case bbox2d = "bbox_2d"
+    }
 }
 
 public struct ShelfItemCount: Codable, Sendable {
@@ -10,9 +19,25 @@ public struct ShelfItemCount: Codable, Sendable {
     public let count: Int
 }
 
+/// A single located product: name/brand plus an image-normalized bounding box
+/// (top-left origin, 0...1) so the UI can highlight it on the photo.
+public struct ShelfDetection: Codable, Sendable {
+    public let name: String
+    public let brand: String?
+    public let box: CGRect
+
+    public init(name: String, brand: String?, box: CGRect) {
+        self.name = name
+        self.brand = brand
+        self.box = box
+    }
+}
+
 public struct ShelfReport: Codable, Sendable {
     public let totalCount: Int
     public let items: [ShelfItemCount]
+    /// Per-product boxes (image-normalized) for region highlighting.
+    public let detections: [ShelfDetection]
 }
 
 /// α1 — Shelf inventory. Tile the shelf (region-axis fan-out), list the products
@@ -33,12 +58,12 @@ public enum ShelfInventory {
                 VLMTask(
                     instruction: """
                     You are auditing a single tile cropped from a retail shelf photo. \
-                    List every distinct product package clearly visible in this tile. \
-                    Give each product's name and its brand if legible. Ignore products \
-                    that are cut off at the edge or unreadable.
+                    Detect every distinct product package clearly visible in this tile. \
+                    For each, give its name, its brand if legible, and its bounding box. \
+                    Ignore products cut off at the edge or unreadable.
                     """,
-                    jsonHint: #"[{"name": "string", "brand": "string or null"}]"#,
-                    options: GenerationOptions(maxTokens: 512, temperature: 0.0)
+                    jsonHint: #"[{"name": "string", "brand": "string or null", "bbox_2d": [x1, y1, x2, y2]}]"#,
+                    options: GenerationOptions(maxTokens: 768, temperature: 0.0)
                 )
             },
             aggregator: ShelfCountAggregator()
@@ -61,16 +86,39 @@ public enum ShelfInventory {
 struct ShelfCountAggregator: Aggregator {
     func callAsFunction(_ inputs: [RegionResult<[ShelfProduct]>]) -> ShelfReport {
         var counts: [String: (display: String, count: Int)] = [:]
+        var detections: [ShelfDetection] = []
         for region in inputs {
+            let tile = region.region.boundingBox
             for product in region.output {
                 let key = product.name.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
                 guard !key.isEmpty else { continue }
                 counts[key, default: (product.name, 0)].count += 1
+                if let box = Self.imageBox(product.bbox2d, in: tile) {
+                    detections.append(ShelfDetection(name: product.name, brand: product.brand, box: box))
+                }
             }
         }
         let items = counts.values
             .map { ShelfItemCount(name: $0.display, count: $0.count) }
             .sorted { $0.count > $1.count }
-        return ShelfReport(totalCount: items.reduce(0) { $0 + $1.count }, items: items)
+        return ShelfReport(
+            totalCount: items.reduce(0) { $0 + $1.count },
+            items: items,
+            detections: detections
+        )
+    }
+
+    /// Map a VLM `bbox_2d` (0...1000 within the tile) to an image-normalized rect,
+    /// using the tile's own image-normalized rect to place it in the full image.
+    private static func imageBox(_ bbox2d: [Double]?, in tile: CGRect) -> CGRect? {
+        guard let b = bbox2d, b.count == 4 else { return nil }
+        let x1 = min(b[0], b[2]) / 1000, x2 = max(b[0], b[2]) / 1000
+        let y1 = min(b[1], b[3]) / 1000, y2 = max(b[1], b[3]) / 1000
+        return CGRect(
+            x: tile.minX + x1 * tile.width,
+            y: tile.minY + y1 * tile.height,
+            width: (x2 - x1) * tile.width,
+            height: (y2 - y1) * tile.height
+        )
     }
 }
