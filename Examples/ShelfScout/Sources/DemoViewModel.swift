@@ -25,6 +25,27 @@ final class DemoViewModel: ObservableObject {
 
     let demos = Demo.all
 
+    /// MobileSAM-backed region provider for tap-to-analyze demos (ROI Zoom). Loaded
+    /// lazily the first time such a demo needs it.
+    let samProvider = SAMROIProvider()
+    /// True while a tap's segmentation is running — debounces taps and drives a spinner.
+    @Published private(set) var isSegmenting = false
+    /// True if MobileSAM could not load (models not bundled yet) — surfaced as a hint.
+    @Published private(set) var roiUnavailable = false
+    /// The whole-image overview text (ROI Zoom's stage 1), and whether it is still running.
+    @Published private(set) var roiSummary: String?
+    @Published private(set) var roiSummaryPending = false
+    /// Count of in-flight high-res detail passes — drives the "analyzing" spinner.
+    @Published private(set) var roiDetailInFlight = 0
+
+    // Tap-to-analyze (ROI Zoom) state: the upright image SAM and the VLM see, plus the
+    // regions accumulated so far. Held here so the shell stays recipe-agnostic.
+    private var roiImage: VLMImage?
+    private var roiDetections: [Detection] = []
+    /// Bumped whenever the ROI session resets (new photo / demo switch) so a late VLM
+    /// result from a previous session is dropped instead of polluting the current one.
+    private var roiGeneration = 0
+
     // Default preset (~3 GB). Swap for `.smolVLM2` to test with a smaller, faster download.
     private let backend = MLXSwiftBackend(profile: .qwen3VL4B)
     private lazy var runner = VLMRunner(backend: backend)
@@ -59,32 +80,47 @@ final class DemoViewModel: ObservableObject {
     }
 
     /// Switch demos: keep the loaded model and the current photo, drop the old result.
+    /// A tap-to-analyze demo with a photo already loaded enters tap mode right away.
     func select(_ demo: Demo) {
         guard !isBusy, demo.id != selectedDemo.id else { return }
         selectedDemo = demo
-        switch phase {
-        case .result, .failed: phase = .ready
-        default: break
+        resetROIState()
+        if demo.isTapToAnalyze {
+            if capturedImage != nil {
+                Task { await beginTapSession() }
+            } else {
+                phase = .ready
+            }
+        } else {
+            switch phase {
+            case .result, .failed: phase = .ready
+            default: break
+            }
         }
     }
 
-    /// Run the selected demo on a freshly captured image.
+    /// Run the selected demo on a freshly captured image (or enter tap mode for a
+    /// tap-to-analyze demo).
     func analyze(_ image: UIImage, detail: Int, query: String) async {
         capturedImage = image
-        await analyzeCurrent(detail: detail, query: query)
+        if selectedDemo.isTapToAnalyze {
+            await beginTapSession()
+        } else {
+            await analyzeCurrent(detail: detail, query: query)
+        }
     }
 
     /// (Re)run the selected demo on the current photo — e.g. after switching demos.
     func analyzeCurrent(detail: Int, query: String) async {
+        guard let run = selectedDemo.run else { return }   // tap-to-analyze demos don't run once
         guard let uiImage = capturedImage,
               let vlmImage = VLMImage(uiImage: uiImage.normalizedUp()) else {
             phase = .failed("Could not read the image.")
             return
         }
         phase = .running(done: 0, total: 0)
-        let demo = selectedDemo
         do {
-            let result = try await demo.run(vlmImage, runner, detail, query) { [weak self] done, total in
+            let result = try await run(vlmImage, runner, detail, query) { [weak self] done, total in
                 Task { @MainActor in self?.phase = .running(done: done, total: total) }
             }
             phase = .result(result)
@@ -92,6 +128,109 @@ final class DemoViewModel: ObservableObject {
         } catch {
             phase = .failed("Analysis failed: \(error)")
         }
+    }
+
+    // MARK: - Tap-to-analyze (ROI Zoom)
+
+    /// Enter tap mode for the current photo: encode it for SAM, kick off the low-res
+    /// overview pass, and show an (initially empty) result the user taps to add regions.
+    func beginTapSession() async {
+        resetROIState()
+        let generation = roiGeneration
+        guard let uiImage = capturedImage,
+              let vlmImage = VLMImage(uiImage: uiImage.normalizedUp()) else {
+            phase = .failed("Could not read the image.")
+            return
+        }
+        roiImage = vlmImage
+        roiSummaryPending = true
+        phase = .result(roiResult())
+        resultCount += 1
+        await samProvider.loadIfNeeded()
+        roiUnavailable = samProvider.loadFailed
+        await samProvider.setImage(vlmImage.cgImage)
+        await runOverview(image: vlmImage, generation: generation)
+    }
+
+    /// Segment the object at a normalized (0...1, top-left) point and analyze it.
+    func addROI(atNormalizedPoint point: CGPoint) async {
+        guard let image = roiImage else { return }
+        await segmentAndDetail(
+            atImagePoint: CGPoint(x: point.x * CGFloat(image.width), y: point.y * CGFloat(image.height)),
+            image: image
+        )
+    }
+
+    /// Segment the object at the image center (the "Analyze center" button).
+    func addROIAtCenter() async {
+        guard let image = roiImage else { return }
+        await segmentAndDetail(
+            atImagePoint: CGPoint(x: CGFloat(image.width) / 2, y: CGFloat(image.height) / 2),
+            image: image
+        )
+    }
+
+    /// Stage 2: SAM localizes the region (fast — the box appears at once), then the VLM
+    /// reads a high-res crop of just that region, streamed into the row + callout.
+    private func segmentAndDetail(atImagePoint pixel: CGPoint, image: VLMImage) async {
+        guard !isSegmenting else { return }
+        let generation = roiGeneration
+        isSegmenting = true
+        let box = await samProvider.roi(atImagePoint: pixel)
+        isSegmenting = false
+        guard generation == roiGeneration, let box else { return }
+        let index = roiDetections.count + 1
+        let key = "roi-\(index)"
+        roiDetections.append(Detection(key: key, label: "Region \(index)", detail: nil, box: box))
+        phase = .result(roiResult())
+        resultCount += 1
+        await runDetail(forKey: key, roi: box, image: image, generation: generation)
+    }
+
+    /// Stage 1: the whole-image overview (low effective resolution) → the pinned summary.
+    private func runOverview(image: VLMImage, generation: Int) async {
+        let text = try? await ROIZoom.overview(on: image, runner: runner)
+        guard generation == roiGeneration else { return }
+        roiSummary = (text?.isEmpty == false) ? text : nil
+        roiSummaryPending = false
+        phase = .result(roiResult())
+        resultCount += 1
+    }
+
+    /// The high-res detail pass for one region → fills its detail in place. The region
+    /// keeps its `id`, so the callout typewriter and highlighting don't restart.
+    private func runDetail(forKey key: String, roi: CGRect, image: VLMImage, generation: Int) async {
+        roiDetailInFlight += 1
+        let text = try? await ROIZoom.detail(on: image, roi: roi, runner: runner)
+        if generation == roiGeneration { roiDetailInFlight -= 1 }
+        guard generation == roiGeneration,
+              let i = roiDetections.firstIndex(where: { $0.key == key }) else { return }
+        let existing = roiDetections[i]
+        roiDetections[i] = Detection(
+            id: existing.id, key: existing.key, label: existing.label,
+            detail: (text?.isEmpty == false) ? text : nil, box: existing.box
+        )
+        phase = .result(roiResult())
+        resultCount += 1
+    }
+
+    /// The accumulated overview + regions as a `DemoResult` (one row + box per region).
+    private func roiResult() -> DemoResult {
+        DemoResult(
+            summary: roiSummary,
+            headline: .init(value: roiDetections.count, unit: "regions"),
+            rows: roiDetections.map { AggregateRow(key: $0.key, label: $0.label, trailing: nil, subtitle: $0.detail) },
+            detections: roiDetections
+        )
+    }
+
+    /// Reset ROI session state and invalidate any in-flight VLM passes.
+    private func resetROIState() {
+        roiGeneration += 1
+        roiDetections = []
+        roiSummary = nil
+        roiSummaryPending = false
+        roiDetailInFlight = 0
     }
 
     /// A model folder sideloaded onto the device via USB into the app's Documents

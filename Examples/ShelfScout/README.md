@@ -4,7 +4,7 @@ A one-screen iOS showcase for VLMKit's structured fan-out recipes. Pick a demo,
 give it a photo, and watch an Apple on-device framework pair with a local VLM to
 turn pixels into structured, point-able results — entirely on-device.
 
-Two demos ship behind a picker, on one shared shell (photo on top, structured
+Three demos ship behind a picker, on one shared shell (photo on top, structured
 result below, with two-way result ↔ box highlighting):
 
 - **α1 Shelf Inventory** — tiles the image (grid fan-out), runs one VLM call per
@@ -13,6 +13,11 @@ result below, with two-way result ↔ box highlighting):
   each person, then one VLM call profiles each one with a detailed description.
   Vision says *where* the people are; the VLM says *who* they are. This Apple-
   framework × VLM pairing is VLMKit's core idea.
+- **P5 ROI Zoom** — tap any object and **MobileSAM**
+  ([SAMKit](https://github.com/john-rocky/SamKit)) segments it on-device; the VLM
+  then reads a high-resolution crop of just that region, surfacing fine detail
+  (small text, marks, defects) the whole-image pass downscales away. SAM says
+  *where* the detail is; the VLM reads it.
 
 > The app is named **VLMKit** on the home screen. Its Xcode project still lives in
 > `Examples/ShelfScout/` and the bundle id stays `com.vlmkit.example.shelfscout`
@@ -40,6 +45,23 @@ connected device, and Run. On first launch the app downloads the default model
 
 > Tip: for a smaller, faster first test, change `.qwen3VL4B` to `.smolVLM2` in
 > `Sources/DemoViewModel.swift` (~1 GB).
+
+## MobileSAM models (ROI Zoom demo)
+
+The **ROI Zoom** demo segments tapped objects with MobileSAM (via SAMKit). Its
+Core ML models (~23 MB) are **not** committed — download them once and drop them
+into `Sources/Models/` so Xcode bundles them:
+
+```sh
+cd Examples/ShelfScout/Sources/Models
+gh release download v1.0.0 --repo john-rocky/SamKit --pattern MobileSAM.zip
+unzip MobileSAM.zip && rm MobileSAM.zip
+```
+
+This yields `mobile_sam_encoder.mlpackage`, `mobile_sam_decoder.mlpackage`, and
+`mobile_sam_prompt_encoder_weights.json` (all git-ignored). Re-run `xcodegen
+generate` so the project picks them up. Without them the other demos still run;
+ROI Zoom shows a "models not found" hint.
 
 ## Sideloading the model via USB (debug)
 

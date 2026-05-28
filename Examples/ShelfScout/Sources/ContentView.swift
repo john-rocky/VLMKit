@@ -72,11 +72,23 @@ struct ContentView: View {
                         imageSize: image.size,
                         detections: shown.detections,
                         selectedKey: selectedKey,
-                        onTap: handleTap
+                        onTap: handleTap,
+                        onTapPoint: vm.selectedDemo.isTapToAnalyze
+                            ? { point in Task { await vm.addROI(atNormalizedPoint: point) } }
+                            : nil
                     )
                     if !shown.detections.isEmpty {
                         tourButton
                     }
+                    if vm.selectedDemo.isTapToAnalyze {
+                        roiHint(hasRegions: !shown.detections.isEmpty)
+                    }
+                }
+                if vm.isSegmenting || vm.roiDetailInFlight > 0 {
+                    ProgressView()
+                        .tint(.white)
+                        .padding(14)
+                        .background(.black.opacity(0.55), in: Circle())
                 }
             } else {
                 ContentUnavailableView(
@@ -120,6 +132,27 @@ struct ContentView: View {
         }
         .padding(14)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
+    }
+
+    /// Guidance pinned to the bottom of the photo for the tap-to-analyze demo.
+    @ViewBuilder private func roiHint(hasRegions: Bool) -> some View {
+        if vm.roiUnavailable {
+            hintLabel("MobileSAM models not found — see the example README.", icon: "exclamationmark.triangle")
+        } else if !hasRegions {
+            hintLabel("Tap an object to segment a region.", icon: "hand.tap")
+        }
+    }
+
+    private func hintLabel(_ text: String, icon: String) -> some View {
+        Label(text, systemImage: icon)
+            .font(.caption).bold()
+            .foregroundStyle(.white)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
+            .background(.black.opacity(0.55), in: Capsule())
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
+            .padding(.bottom, 14)
+            .allowsHitTesting(false)
     }
 
     // MARK: - Output (bottom half) — demo picker, result, pinned controls.
@@ -177,7 +210,12 @@ struct ContentView: View {
         case .ready:
             readyHint
         case .result(let result):
-            ResultView(result: displayed(result), selectedKey: selectedKey, onTapKey: handleTap)
+            ResultView(
+                result: displayed(result),
+                summaryPending: vm.roiSummaryPending,
+                selectedKey: selectedKey,
+                onTapKey: handleTap
+            )
         case .failed(let message):
             Label(message, systemImage: "exclamationmark.triangle")
                 .foregroundStyle(.red)
@@ -249,7 +287,18 @@ struct ContentView: View {
             }
             .buttonStyle(.bordered)
         }
-        if vm.hasImage {
+        // ROI Zoom: analyze the image center without tapping (the Center option from §5).
+        if vm.selectedDemo.isTapToAnalyze && vm.hasImage {
+            Button {
+                Task { await vm.addROIAtCenter() }
+            } label: {
+                Label("Analyze center", systemImage: "viewfinder").frame(maxWidth: .infinity)
+            }
+            .buttonStyle(.bordered)
+            .disabled(vm.isSegmenting || vm.roiUnavailable)
+        }
+        // Tap-to-analyze demos (ROI Zoom) have no run-once pass — the tap is the action.
+        if vm.hasImage && !vm.selectedDemo.isTapToAnalyze {
             Button {
                 resetSelection()
                 requestRun(.current)
@@ -415,17 +464,33 @@ private struct SpotlightOverlay: View {
     let detections: [Detection]
     let selectedKey: String?
     let onTap: (String?) -> Void
+    /// Tap-to-analyze hook: an empty-area tap reports the normalized (0...1, top-left)
+    /// image point so the caller can segment there. Nil = taps just clear the selection.
+    var onTapPoint: ((CGPoint) -> Void)? = nil
 
     var body: some View {
         GeometryReader { geo in
             let fitted = Self.fittedRect(imageSize: imageSize, in: geo.size)
             let selected = detections.filter { $0.key == selectedKey }
             ZStack {
-                // Tap anywhere that isn't a box to clear the selection.
+                // Empty-area tap: in tap-to-analyze mode report the normalized image point
+                // (to segment there); otherwise clear the selection. Taps on existing boxes
+                // are left to the boxes' own tap (select/highlight).
                 Rectangle()
                     .fill(Color.black.opacity(0.001))
                     .contentShape(Rectangle())
-                    .onTapGesture { onTap(nil) }
+                    .gesture(SpatialTapGesture().onEnded { value in
+                        guard let onTapPoint else { onTap(nil); return }
+                        guard fitted.contains(value.location),
+                              !detections.contains(where: {
+                                  Self.viewRect($0.box, in: fitted).insetBy(dx: -6, dy: -6).contains(value.location)
+                              })
+                        else { return }
+                        onTapPoint(CGPoint(
+                            x: (value.location.x - fitted.minX) / fitted.width,
+                            y: (value.location.y - fitted.minY) / fitted.height
+                        ))
+                    })
 
                 // Spotlight: dim the whole photo, punching a hole at each selected box.
                 if selectedKey != nil {
@@ -583,14 +648,26 @@ private enum Typewriter {
 /// spotlights its box(es) on the photo (two-way with the overlay).
 private struct ResultView: View {
     let result: DemoResult
+    /// ROI Zoom only: the overview (stage 1) is still running — show a spinner for it.
+    var summaryPending: Bool = false
     let selectedKey: String?
     let onTapKey: (String?) -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            HStack(alignment: .firstTextBaseline, spacing: 6) {
-                Text("\(result.headline.value)").font(.system(size: 40, weight: .bold))
-                Text(result.headline.unit).foregroundStyle(.secondary)
+            // ROI Zoom leads with the pinned overview; the count demos lead with the headline.
+            if result.summary != nil || summaryPending {
+                overviewCard
+                if !result.rows.isEmpty {
+                    Text("\(result.headline.value) \(result.headline.unit)")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                }
+            } else {
+                HStack(alignment: .firstTextBaseline, spacing: 6) {
+                    Text("\(result.headline.value)").font(.system(size: 40, weight: .bold))
+                    Text(result.headline.unit).foregroundStyle(.secondary)
+                }
             }
             ScrollView {
                 VStack(spacing: 0) {
@@ -602,6 +679,31 @@ private struct ResultView: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+    }
+
+    /// The pinned whole-image overview (ROI Zoom stage 1): a spinner while it runs,
+    /// then the text, shown above the per-region rows.
+    @ViewBuilder private var overviewCard: some View {
+        VStack(alignment: .leading, spacing: 5) {
+            Label("Overview", systemImage: "doc.text.magnifyingglass")
+                .font(.caption).bold()
+                .foregroundStyle(.secondary)
+            if let summary = result.summary {
+                Text(summary)
+                    .font(.callout)
+                    .fixedSize(horizontal: false, vertical: true)
+            } else {
+                HStack(spacing: 8) {
+                    ProgressView()
+                    Text("Reading the whole image…")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                }
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(10)
+        .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 10))
     }
 
     @ViewBuilder private func rowView(_ row: AggregateRow) -> some View {

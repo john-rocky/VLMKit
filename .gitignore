@@ -13,6 +13,8 @@ Package.resolved
 *.mlmodel
 *.mlmodelc
 *.mlpackage
+# MobileSAM prompt-encoder weights (release artifact bundled into the example app)
+mobile_sam_prompt_encoder_weights.json
 
 # macOS
 .DS_Store

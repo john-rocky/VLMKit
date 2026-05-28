@@ -12,15 +12,19 @@ struct Demo: Identifiable, Sendable {
     /// Placeholder for a free-text question asked per detection, or nil if the demo
     /// takes none. Empty input falls back to the recipe's default prompt.
     let queryPlaceholder: String?
-    let run: @Sendable (
+    /// Tap-to-analyze demos don't run once over the whole image; instead the user taps
+    /// objects and each tap produces a region (ROI Zoom). Such demos have no `run`.
+    let isTapToAnalyze: Bool
+    /// The run-once recipe call, or nil for tap-to-analyze demos.
+    let run: (@Sendable (
         _ image: VLMImage,
         _ runner: VLMRunner,
         _ detail: Int,
         _ query: String,
         _ onProgress: @escaping @Sendable (_ done: Int, _ total: Int) -> Void
-    ) async throws -> DemoResult
+    ) async throws -> DemoResult)?
 
-    static let all: [Demo] = [.shelfInventory, .crowdAnalytics]
+    static let all: [Demo] = [.shelfInventory, .crowdAnalytics, .roiZoom]
 }
 
 extension Demo {
@@ -30,6 +34,7 @@ extension Demo {
         name: "Shelf Inventory",
         gridDetail: 2...4,
         queryPlaceholder: nil,
+        isTapToAnalyze: false,
         run: { image, runner, detail, _, onProgress in
             try await ShelfInventory.run(
                 on: image, runner: runner, rows: detail, columns: detail, onProgress: onProgress
@@ -45,6 +50,7 @@ extension Demo {
         name: "Crowd Analytics",
         gridDetail: nil,
         queryPlaceholder: "Ask about each person (e.g. Is this person wearing a hard hat?)",
+        isTapToAnalyze: false,
         run: { image, runner, _, query, onProgress in
             try await CrowdAnalytics.run(
                 on: image, runner: runner,
@@ -52,6 +58,19 @@ extension Demo {
                 onProgress: onProgress
             ).asDemoResult()
         }
+    )
+
+    /// P5 — ROI Zoom. A whole-image overview, then tap an object: MobileSAM (Apple
+    /// on-device) localizes it, and the VLM reads a high-res crop of just that region.
+    /// Tap-to-analyze, so it has no run-once pass; the shell drives it via the SAM
+    /// provider. (Step 2: SAM tap → box. The VLM overview/detail passes land in step 3.)
+    static let roiZoom = Demo(
+        id: "roi",
+        name: "ROI Zoom",
+        gridDetail: nil,
+        queryPlaceholder: nil,
+        isTapToAnalyze: true,
+        run: nil
     )
 }
 

@@ -17,6 +17,7 @@ enum AppLanguage: String, CaseIterable, Identifiable {
 func translatableStrings(in result: DemoResult) -> [String] {
     var seen = Set<String>()
     seen.insert(result.headline.unit)
+    if let summary = result.summary { seen.insert(summary) }
     for row in result.rows {
         seen.insert(row.label)
         if let subtitle = row.subtitle { seen.insert(subtitle) }
@@ -35,6 +36,7 @@ func translatableStrings(in result: DemoResult) -> [String] {
 func localized(_ result: DemoResult, using cache: [String: String]) -> DemoResult {
     func tr(_ string: String) -> String { cache[string] ?? string }
     return DemoResult(
+        summary: result.summary.map(tr),
         headline: .init(value: result.headline.value, unit: tr(result.headline.unit)),
         rows: result.rows.map {
             AggregateRow(key: $0.key, label: tr($0.label), trailing: $0.trailing, subtitle: $0.subtitle.map(tr))

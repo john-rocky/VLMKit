@@ -8,6 +8,12 @@ options:
 packages:
   VLMKit:
     path: ../..
+  # MobileSAM segmentation (owner's package). The ROI Zoom demo turns a tap/center
+  # point into a region with it. The .mlpackage models are bundled via Sources/Models
+  # (gitignored — download MobileSAM.zip from the SamKit releases; see README).
+  SAMKit:
+    url: https://github.com/john-rocky/SamKit.git
+    from: 1.0.0
 
 targets:
   ShelfScout:
@@ -18,6 +24,8 @@ targets:
     dependencies:
       - package: VLMKit
         product: VLMKit
+      - package: SAMKit
+        product: SAMKit
     settings:
       base:
         GENERATE_INFOPLIST_FILE: YES

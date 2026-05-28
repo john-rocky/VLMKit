@@ -6,13 +6,23 @@ import Foundation
 /// Rows and detections are linked by `key`, so tapping one highlights the other —
 /// VLMKit's "finger to point" payoff, kept independent of any single recipe.
 struct DemoResult: Sendable {
+    /// Optional overview pinned above the rows — ROI Zoom's whole-image pass. Nil for
+    /// the count-style demos (α1/α2), which lead with the headline instead.
+    let summary: String?
     let headline: Headline
     let rows: [AggregateRow]
     let detections: [Detection]
 
+    init(summary: String? = nil, headline: Headline, rows: [AggregateRow], detections: [Detection]) {
+        self.summary = summary
+        self.headline = headline
+        self.rows = rows
+        self.detections = detections
+    }
+
     struct Headline: Sendable {
         let value: Int
-        let unit: String          // "items" / "people"
+        let unit: String          // "items" / "people" / "regions"
     }
 }
 
