@@ -1,4 +1,5 @@
 import Foundation
+import CoreGraphics
 import VLMKit
 
 /// Command-line driver for VLMKit — loads a model on this Mac and runs a recipe
@@ -8,6 +9,7 @@ import VLMKit
 ///   vlmkit-cli describe  <image>                       freeform description (streamed)
 ///   vlmkit-cli shelf     <image> [--rows N] [--cols N] α1 shelf inventory → JSON
 ///   vlmkit-cli crowd     <image> [--max N] [--ask "Q"]  α2 per-person VLM query → JSON
+///   vlmkit-cli roizoom   <image> [--rect x,y,w,h] [--ask "Q"] P5 ROI zoom: overview + hi-res detail → JSON
 ///   vlmkit-cli form      <image> --fields "a,b,c"      α7 form extraction → JSON
 ///   vlmkit-cli checklist <image> --items "a;b;c"       α11 checklist → JSON
 ///   vlmkit-cli bench     <image> [--runs N]            decode-speed benchmark
@@ -31,6 +33,7 @@ struct VLMKitCLI {
         case "describe": try await describe(options)
         case "shelf": try await shelf(options)
         case "crowd": try await crowd(options)
+        case "roizoom": try await roizoom(options)
         case "form": try await form(options)
         case "checklist": try await checklist(options)
         case "bench": try await bench(options)
@@ -76,6 +79,28 @@ struct VLMKitCLI {
             log("  person \(done)/\(total)")
         }
         printJSON(report)
+    }
+
+    static func roizoom(_ options: Options) async throws {
+        let image = try loadImage(options)
+        let runner = try await makeRunner(options)
+        // Normalized ROI rect "x,y,w,h" (each 0...1); default to the center 50%.
+        let roi = parseRect(options.string("rect")) ?? CGRect(x: 0.25, y: 0.25, width: 0.5, height: 0.5)
+        let question = options.string("ask")
+        log("Overview pass (whole image)…")
+        let overview = try await ROIZoom.overview(on: image, runner: runner)
+        log("Detail pass (ROI \(roi))…")
+        let detail = try await ROIZoom.detail(on: image, roi: roi, runner: runner, question: question)
+        printJSON(["overview": overview, "detail": detail])
+    }
+
+    /// Parse a normalized ROI rect from "x,y,w,h" (each 0...1). Returns nil if malformed.
+    static func parseRect(_ string: String?) -> CGRect? {
+        guard let parts = string?.split(separator: ",").map({ $0.trimmingCharacters(in: .whitespaces) }),
+              parts.count == 4,
+              let x = Double(parts[0]), let y = Double(parts[1]),
+              let w = Double(parts[2]), let h = Double(parts[3]) else { return nil }
+        return CGRect(x: x, y: y, width: w, height: h)
     }
 
     static func form(_ options: Options) async throws {
@@ -179,6 +204,7 @@ struct VLMKitCLI {
           vlmkit-cli describe  <image> [--prompt "..."]      Freeform description (streamed)
           vlmkit-cli shelf     <image> [--rows N] [--cols N] α1 Shelf inventory → JSON
           vlmkit-cli crowd     <image> [--max N] [--ask "Q"]  α2 Crowd / per-person query → JSON
+          vlmkit-cli roizoom   <image> [--rect x,y,w,h] [--ask "Q"] P5 ROI zoom: overview + hi-res detail → JSON
           vlmkit-cli form      <image> --fields "a,b,c"      α7 Form extraction → JSON
           vlmkit-cli checklist <image> --items "a;b;c"       α11 Checklist → JSON
           vlmkit-cli bench     <image> [--runs N]            Decode-speed benchmark
