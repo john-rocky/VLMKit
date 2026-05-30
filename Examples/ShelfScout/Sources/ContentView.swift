@@ -214,7 +214,8 @@ struct ContentView: View {
                 result: displayed(result),
                 summaryPending: vm.roiSummaryPending,
                 selectedKey: selectedKey,
-                onTapKey: handleTap
+                onTapKey: handleTap,
+                highlightsCaptionMentions: vm.selectedDemo.id == Demo.describeAndPoint.id
             )
         case .failed(let message):
             Label(message, systemImage: "exclamationmark.triangle")
@@ -652,6 +653,10 @@ private struct ResultView: View {
     var summaryPending: Bool = false
     let selectedKey: String?
     let onTapKey: (String?) -> Void
+    /// Describe & Point: accent the current mention's word in the caption (summary), in
+    /// sync with its spotlighted box. Off for other demos (ROI Zoom's overview has no
+    /// in-caption mentions to highlight).
+    var highlightsCaptionMentions: Bool = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -689,9 +694,12 @@ private struct ResultView: View {
                 .font(.caption).bold()
                 .foregroundStyle(.secondary)
             if let summary = result.summary {
-                Text(summary)
+                Text(highlightsCaptionMentions
+                     ? highlightedCaption(summary, detections: result.detections, selectedKey: selectedKey)
+                     : AttributedString(summary))
                     .font(.callout)
                     .fixedSize(horizontal: false, vertical: true)
+                    .animation(.easeInOut(duration: 0.35), value: selectedKey)
             } else {
                 HStack(spacing: 8) {
                     ProgressView()
@@ -731,5 +739,42 @@ private struct ResultView: View {
         )
         .contentShape(Rectangle())
         .onTapGesture { onTapKey(row.key) }
+    }
+
+    // MARK: - Caption mention highlight (Describe & Point)
+
+    /// The caption with the selected mention's word accented, in sync with its box.
+    /// Returns the plain caption when nothing is selected or the phrase can't be found
+    /// (e.g. a translated caption — the box walk still works, the word highlight is off).
+    private func highlightedCaption(_ caption: String, detections: [Detection], selectedKey: String?) -> AttributedString {
+        var attr = AttributedString(caption)
+        guard let selectedKey,
+              let range = Self.mentionRange(in: caption, detections: detections, key: selectedKey)
+        else { return attr }
+        let lo = caption.distance(from: caption.startIndex, to: range.lowerBound)
+        let hi = caption.distance(from: caption.startIndex, to: range.upperBound)
+        guard lo < hi else { return attr }
+        let aLo = attr.index(attr.startIndex, offsetByCharacters: lo)
+        let aHi = attr.index(attr.startIndex, offsetByCharacters: hi)
+        attr[aLo..<aHi].backgroundColor = .accentColor.opacity(0.3)
+        attr[aLo..<aHi].inlinePresentationIntent = .stronglyEmphasized
+        return attr
+    }
+
+    /// The caption range of the detection with `key`. Walks detections in caption order,
+    /// consuming each phrase left→right (so duplicate phrases map to the right
+    /// occurrence) — mirroring how the recipe located them. nil if not found.
+    private static func mentionRange(in caption: String, detections: [Detection], key: String) -> Range<String.Index>? {
+        var nextStart: [String: String.Index] = [:]
+        for detection in detections {
+            let phrase = detection.label
+            guard !phrase.isEmpty else { continue }
+            let lowered = phrase.lowercased()
+            let start = nextStart[lowered] ?? caption.startIndex
+            guard let range = caption.range(of: phrase, options: .caseInsensitive, range: start..<caption.endIndex) else { continue }
+            nextStart[lowered] = range.upperBound
+            if detection.key == key { return range }
+        }
+        return nil
     }
 }

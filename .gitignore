@@ -15,6 +15,8 @@ Package.resolved
 *.mlpackage
 # MobileSAM prompt-encoder weights (release artifact bundled into the example app)
 mobile_sam_prompt_encoder_weights.json
+# YOLOE CLIP BPE vocabulary (release artifact bundled into the example app)
+clip_vocab.json
 
 # macOS
 .DS_Store
@@ -28,3 +30,6 @@ Examples/ShelfScout/ShelfScout.entitlements
 PROJECT_BRIEF.md
 HANDOFF.md
 NEXT_TASK_ROI_ZOOM.md
+NEXT_TASK_DESCRIBE_AND_POINT.md
+# Local article/draft (not part of the library repo)
+crowd-demo-article.md
