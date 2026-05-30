@@ -7,6 +7,7 @@ import VLMKit
 ///
 /// Usage:
 ///   vlmkit-cli describe  <image>                       freeform description (streamed)
+///   vlmkit-cli describepoint <image> [--max N]         caption + named objects → JSON {caption, objects}
 ///   vlmkit-cli shelf     <image> [--rows N] [--cols N] α1 shelf inventory → JSON
 ///   vlmkit-cli crowd     <image> [--max N] [--ask "Q"]  α2 per-person VLM query → JSON
 ///   vlmkit-cli roizoom   <image> [--rect x,y,w,h] [--ask "Q"] P5 ROI zoom: overview + hi-res detail → JSON
@@ -31,6 +32,7 @@ struct VLMKitCLI {
         let options = Options(Array(arguments.dropFirst()))
         switch command {
         case "describe": try await describe(options)
+        case "describepoint": try await describepoint(options)
         case "shelf": try await shelf(options)
         case "crowd": try await crowd(options)
         case "roizoom": try await roizoom(options)
@@ -55,6 +57,24 @@ struct VLMKitCLI {
             FileHandle.standardOutput.write(Data(chunk.utf8))
         }
         print("")
+    }
+
+    /// Describe & Point — the VLM writes a caption and names the concrete objects in
+    /// it; prints `{caption, objects:[{phrase, query}]}`. Boxes are drawn in-app by the
+    /// detector, so this Mac smoke only checks the language: caption reads, phrases are
+    /// verbatim spans in caption order, queries are sensible detector nouns.
+    static func describepoint(_ options: Options) async throws {
+        let image = try loadImage(options)
+        let runner = try await makeRunner(options)
+        let maxObjects = options.int("max", default: 8)
+        log("Describing, then locating up to \(maxObjects) mentioned object(s)…")
+        let description = try await DescribeAndPoint.run(on: image, runner: runner, maxObjects: maxObjects)
+        struct OutObject: Encodable { let phrase: String; let query: String }
+        struct Out: Encodable { let caption: String; let objects: [OutObject] }
+        printJSON(Out(
+            caption: description.caption,
+            objects: description.objects.map { OutObject(phrase: $0.phrase, query: $0.query) }
+        ))
     }
 
     static func shelf(_ options: Options) async throws {
@@ -202,6 +222,7 @@ struct VLMKitCLI {
 
         USAGE:
           vlmkit-cli describe  <image> [--prompt "..."]      Freeform description (streamed)
+          vlmkit-cli describepoint <image> [--max N]         Caption + named objects → JSON {caption, objects}
           vlmkit-cli shelf     <image> [--rows N] [--cols N] α1 Shelf inventory → JSON
           vlmkit-cli crowd     <image> [--max N] [--ask "Q"]  α2 Crowd / per-person query → JSON
           vlmkit-cli roizoom   <image> [--rect x,y,w,h] [--ask "Q"] P5 ROI zoom: overview + hi-res detail → JSON

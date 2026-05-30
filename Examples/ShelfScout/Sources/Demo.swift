@@ -24,7 +24,7 @@ struct Demo: Identifiable, Sendable {
         _ onProgress: @escaping @Sendable (_ done: Int, _ total: Int) -> Void
     ) async throws -> DemoResult)?
 
-    static let all: [Demo] = [.shelfInventory, .crowdAnalytics, .roiZoom]
+    static let all: [Demo] = [.shelfInventory, .crowdAnalytics, .roiZoom, .describeAndPoint]
 }
 
 extension Demo {
@@ -70,6 +70,20 @@ extension Demo {
         gridDetail: nil,
         queryPlaceholder: nil,
         isTapToAnalyze: true,
+        run: nil
+    )
+
+    /// "Describe & Point" — the VLM writes a short caption and names the concrete
+    /// objects in it; YOLOE (Apple-framework open-vocab detection, app-side) boxes each
+    /// named object, in caption order. Run-once, but it needs the grounding provider, so
+    /// — like ROI Zoom — the shell drives it through the view model, not this generic
+    /// `run` closure (which has no provider).
+    static let describeAndPoint = Demo(
+        id: "describe",
+        name: "Describe & Point",
+        gridDetail: nil,
+        queryPlaceholder: nil,
+        isTapToAnalyze: false,
         run: nil
     )
 }

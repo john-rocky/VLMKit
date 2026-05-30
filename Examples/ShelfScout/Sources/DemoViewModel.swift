@@ -46,6 +46,10 @@ final class DemoViewModel: ObservableObject {
     /// result from a previous session is dropped instead of polluting the current one.
     private var roiGeneration = 0
 
+    /// YOLOE-backed open-vocab grounding for Describe & Point (the "point" half — the
+    /// VLM names objects, this localizes them). Loaded lazily the first time it runs.
+    let textGroundingProvider = TextGroundingProvider()
+
     // Default preset (~3 GB). Swap for `.smolVLM2` to test with a smaller, faster download.
     private let backend = MLXSwiftBackend(profile: .qwen3VL4B)
     private lazy var runner = VLMRunner(backend: backend)
@@ -112,6 +116,10 @@ final class DemoViewModel: ObservableObject {
 
     /// (Re)run the selected demo on the current photo — e.g. after switching demos.
     func analyzeCurrent(detail: Int, query: String) async {
+        if selectedDemo.id == Demo.describeAndPoint.id {   // run-once, but needs the grounding provider
+            await analyzeDescribeAndPoint()
+            return
+        }
         guard let run = selectedDemo.run else { return }   // tap-to-analyze demos don't run once
         guard let uiImage = capturedImage,
               let vlmImage = VLMImage(uiImage: uiImage.normalizedUp()) else {
@@ -123,6 +131,51 @@ final class DemoViewModel: ObservableObject {
             let result = try await run(vlmImage, runner, detail, query) { [weak self] done, total in
                 Task { @MainActor in self?.phase = .running(done: done, total: total) }
             }
+            phase = .result(result)
+            resultCount += 1
+        } catch {
+            phase = .failed("Analysis failed: \(error)")
+        }
+    }
+
+    // MARK: - Describe & Point
+
+    /// The VLM writes a caption and names the concrete objects; YOLOE (app-side,
+    /// off-main) boxes each one. A "mention" is an object YOLOE located; the caption (in
+    /// `summary`) and the boxes share those objects in caption order, so the shell's
+    /// existing tour + result⇄region highlighting walks them. (The synced in-caption word
+    /// highlight is the next step; this reuses the shell as-is.)
+    private func analyzeDescribeAndPoint() async {
+        guard let uiImage = capturedImage,
+              let vlmImage = VLMImage(uiImage: uiImage.normalizedUp()) else {
+            phase = .failed("Could not read the image.")
+            return
+        }
+        phase = .running(done: 0, total: 0)
+        await textGroundingProvider.loadIfNeeded()
+        do {
+            let description = try await DescribeAndPoint.run(on: vlmImage, runner: runner, maxObjects: 8)
+            // Objects with a usable detector query, in caption order. The detector drops
+            // empty queries, so filtering them here keeps each object's index equal to its
+            // YOLOE classIndex (the key boxes come back under).
+            let groundable = description.objects.filter {
+                !$0.query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            }
+            let boxes = await textGroundingProvider.ground(
+                cgImage: vlmImage.cgImage, queries: groundable.map(\.query)
+            )
+            // A "mention" is an object YOLOE located; keep caption order, index is a stable key.
+            var mentions: [(key: String, phrase: String, box: CGRect)] = []
+            for (index, object) in groundable.enumerated() {
+                guard let box = boxes[index] else { continue }
+                mentions.append((key: "dp-\(index)", phrase: object.phrase, box: box))
+            }
+            let result = DemoResult(
+                summary: description.caption,
+                headline: .init(value: mentions.count, unit: "objects"),
+                rows: mentions.map { AggregateRow(key: $0.key, label: $0.phrase, trailing: nil, subtitle: nil) },
+                detections: mentions.map { Detection(key: $0.key, label: $0.phrase, detail: nil, box: $0.box) }
+            )
             phase = .result(result)
             resultCount += 1
         } catch {
