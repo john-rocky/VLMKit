@@ -16,8 +16,8 @@ final class AggregatorTests: XCTestCase {
 
     func testShelfCountAggregatorMergesCaseInsensitively() {
         let result = ShelfCountAggregator()([
-            makeRegionResult([ShelfProduct(name: "Coke", brand: nil), ShelfProduct(name: "coke", brand: "Coca-Cola")]),
-            makeRegionResult([ShelfProduct(name: "Pepsi", brand: nil)]),
+            makeRegionResult([ShelfProduct(name: "Coke", brand: nil, bbox2d: nil), ShelfProduct(name: "coke", brand: "Coca-Cola", bbox2d: nil)]),
+            makeRegionResult([ShelfProduct(name: "Pepsi", brand: nil, bbox2d: nil)]),
         ])
         XCTAssertEqual(result.totalCount, 3)
         XCTAssertEqual(result.items.first?.name, "Coke")
