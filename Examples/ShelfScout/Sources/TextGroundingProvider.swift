@@ -39,33 +39,42 @@ final class TextGroundingProvider: ObservableObject {
         if loadFailed { print("[TextGroundingProvider] YOLOE models failed to load") }
     }
 
+    /// Boxes for each grounded query plus, optionally, the combined instance-mask
+    /// overlay (proto-resolution RGBA, already de-letterboxed to the original image
+    /// aspect). `maskImage` is nil when there were no detections.
+    struct GroundingResult {
+        let boxes: [Int: CGRect]
+        let maskImage: CGImage?
+    }
+
     /// Ground each query noun on the image and return one image-normalized
     /// (0...1, top-left) box per query that was found, keyed by the query's index
     /// in `queries` (its YOLOE `classIndex`). A query may yield zero, one, or many
     /// boxes; the highest-confidence box per query is kept. Missing queries are
-    /// simply absent from the result.
+    /// simply absent from the result. `maskImage` is the optional combined silhouette
+    /// overlay across all detections (each in its YOLOE class colour).
     ///
     /// Callers must pass non-empty queries: the detector drops empty ones, which would
     /// shift every later `classIndex` and misattribute boxes.
-    func ground(cgImage: CGImage, queries: [String], confidenceThreshold: Float = 0.15) async -> [Int: CGRect] {
-        guard let detector, isReady, !queries.isEmpty else { return [:] }
+    func ground(cgImage: CGImage, queries: [String], confidenceThreshold: Float = 0.15) async -> GroundingResult {
+        guard let detector, isReady, !queries.isEmpty else { return GroundingResult(boxes: [:], maskImage: nil) }
         // The detector splits the query string on commas, so a comma inside a query
         // would fragment it and shift every later classIndex; replace commas with
         // spaces to keep the join↔split 1:1 with `queries`.
         let queryString = queries.map { $0.replacingOccurrences(of: ",", with: " ") }.joined(separator: ", ")
-        let detections: [TextGroundingDetector.Detection] = await Task.detached(priority: .userInitiated) {
+        let result: TextGroundingDetector.DetectionResult = await Task.detached(priority: .userInitiated) {
             detector.confidenceThreshold = confidenceThreshold
             detector.updateQueries(queryString)
-            return detector.detectSyncWithMasks(image: UIImage(cgImage: cgImage)).detections
+            return detector.detectSyncWithMasks(image: UIImage(cgImage: cgImage))
         }.value
 
         // classIndex == the index of the query in `queries`. Keep the top-confidence
         // box per query.
         var best: [Int: TextGroundingDetector.Detection] = [:]
-        for detection in detections {
+        for detection in result.detections {
             if let current = best[detection.classIndex], current.confidence >= detection.confidence { continue }
             best[detection.classIndex] = detection
         }
-        return best.mapValues { $0.normRect }
+        return GroundingResult(boxes: best.mapValues { $0.normRect }, maskImage: result.maskImage)
     }
 }
