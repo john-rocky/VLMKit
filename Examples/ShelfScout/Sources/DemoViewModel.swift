@@ -49,6 +49,9 @@ final class DemoViewModel: ObservableObject {
     /// YOLOE-backed open-vocab grounding for Describe & Point (the "point" half — the
     /// VLM names objects, this localizes them). Loaded lazily the first time it runs.
     let textGroundingProvider = TextGroundingProvider()
+    /// Combined YOLOE instance-mask overlay from the most recent Describe & Point run
+    /// — drawn on the photo when the user toggles the mask outline on.
+    @Published private(set) var describeMaskImage: CGImage?
 
     // Default preset (~3 GB). Swap for `.smolVLM2` to test with a smaller, faster download.
     private let backend = MLXSwiftBackend(profile: .qwen3VL4B)
@@ -152,6 +155,7 @@ final class DemoViewModel: ObservableObject {
             return
         }
         phase = .running(done: 0, total: 0)
+        describeMaskImage = nil
         await textGroundingProvider.loadIfNeeded()
         do {
             let description = try await DescribeAndPoint.run(on: vlmImage, runner: runner, maxObjects: 8)
@@ -161,13 +165,14 @@ final class DemoViewModel: ObservableObject {
             let groundable = description.objects.filter {
                 !$0.query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             }
-            let boxes = await textGroundingProvider.ground(
+            let grounding = await textGroundingProvider.ground(
                 cgImage: vlmImage.cgImage, queries: groundable.map(\.query)
             )
+            describeMaskImage = grounding.maskImage
             // A "mention" is an object YOLOE located; keep caption order, index is a stable key.
             var mentions: [(key: String, phrase: String, box: CGRect)] = []
             for (index, object) in groundable.enumerated() {
-                guard let box = boxes[index] else { continue }
+                guard let box = grounding.boxes[index] else { continue }
                 mentions.append((key: "dp-\(index)", phrase: object.phrase, box: box))
             }
             let result = DemoResult(

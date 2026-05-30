@@ -13,6 +13,9 @@ import VLMKit
 struct ContentView: View {
     @StateObject private var vm = DemoViewModel()
     @AppStorage("appLanguage") private var languageRaw = AppLanguage.english.rawValue
+    /// Describe & Point: render YOLOE instance-mask silhouettes on the photo instead of
+    /// only the rect boxes. Persisted; only takes effect on that demo.
+    @AppStorage("describePointShowMasks") private var showMasks = false
     @State private var detail = 3
     @State private var query = ""
     @State private var englishQuery = ""
@@ -68,6 +71,20 @@ struct ContentView: View {
                     .scaledToFit()
                 if case .result(let result) = vm.phase {
                     let shown = displayed(result)
+                    // Optional YOLOE instance-mask silhouettes (Describe & Point). Drawn
+                    // BELOW the spotlight so the selection's dim affects them the same
+                    // way it does the photo — the spotlighted box shows its mask
+                    // brightly, the others stay visible but muted.
+                    if showMasks,
+                       vm.selectedDemo.id == Demo.describeAndPoint.id,
+                       let mask = vm.describeMaskImage {
+                        Image(decorative: mask, scale: 1, orientation: .up)
+                            .resizable()
+                            .interpolation(.none)
+                            .scaledToFit()
+                            .opacity(0.55)
+                            .allowsHitTesting(false)
+                    }
                     SpotlightOverlay(
                         imageSize: image.size,
                         detections: shown.detections,
@@ -78,7 +95,7 @@ struct ContentView: View {
                             : nil
                     )
                     if !shown.detections.isEmpty {
-                        tourButton
+                        trailingPhotoControls
                     }
                     if vm.selectedDemo.isTapToAnalyze {
                         roiHint(hasRegions: !shown.detections.isEmpty)
@@ -119,19 +136,30 @@ struct ContentView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
 
-    private var tourButton: some View {
-        Button {
-            isTouring ? stopTour() : startTour()
-        } label: {
-            Image(systemName: isTouring ? "stop.fill" : "play.fill")
-                .font(.headline)
-                .foregroundStyle(.white)
-                .frame(width: 42, height: 42)
-                .background(.black.opacity(0.5), in: Circle())
-                .overlay(Circle().strokeBorder(.white.opacity(0.6), lineWidth: 1))
+    /// Stack of overlay buttons in the top-right of the photo: auto-tour, plus the
+    /// optional mask-silhouette toggle for Describe & Point.
+    @ViewBuilder private var trailingPhotoControls: some View {
+        VStack(spacing: 8) {
+            Button { isTouring ? stopTour() : startTour() } label: {
+                roundOverlayButton(systemImage: isTouring ? "stop.fill" : "play.fill", tint: .white)
+            }
+            if vm.selectedDemo.id == Demo.describeAndPoint.id {
+                Button { showMasks.toggle() } label: {
+                    roundOverlayButton(systemImage: "lasso", tint: showMasks ? .yellow : .white)
+                }
+            }
         }
         .padding(14)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
+    }
+
+    private func roundOverlayButton(systemImage: String, tint: Color) -> some View {
+        Image(systemName: systemImage)
+            .font(.headline)
+            .foregroundStyle(tint)
+            .frame(width: 42, height: 42)
+            .background(.black.opacity(0.5), in: Circle())
+            .overlay(Circle().strokeBorder(tint.opacity(0.6), lineWidth: 1))
     }
 
     /// Guidance pinned to the bottom of the photo for the tap-to-analyze demo.
