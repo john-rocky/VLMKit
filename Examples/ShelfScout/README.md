@@ -4,7 +4,7 @@ A one-screen iOS showcase for VLMKit's structured fan-out recipes. Pick a demo,
 give it a photo, and watch an Apple on-device framework pair with a local VLM to
 turn pixels into structured, point-able results — entirely on-device.
 
-Three demos ship behind a picker, on one shared shell (photo on top, structured
+Four demos ship behind a picker, on one shared shell (photo on top, structured
 result below, with two-way result ↔ box highlighting):
 
 - **α1 Shelf Inventory** — tiles the image (grid fan-out), runs one VLM call per
@@ -18,6 +18,12 @@ result below, with two-way result ↔ box highlighting):
   then reads a high-resolution crop of just that region, surfacing fine detail
   (small text, marks, defects) the whole-image pass downscales away. SAM says
   *where* the detail is; the VLM reads it.
+- **Describe & Point** — the VLM writes a short caption and names the concrete
+  objects in it; **YOLOE** (open-vocabulary text-grounded detection +
+  segmentation, from [CoreML-Models](https://github.com/john-rocky/CoreML-Models))
+  boxes each one. The caption's words and the photo's boxes advance together
+  under the auto-tour, so each spoken object is grounded in pixels. The VLM
+  names *what*; YOLOE finds *where*.
 
 > The app is named **VLMKit** on the home screen. Its Xcode project still lives in
 > `Examples/ShelfScout/` and the bundle id stays `com.vlmkit.example.shelfscout`
@@ -62,6 +68,39 @@ This yields `mobile_sam_encoder.mlpackage`, `mobile_sam_decoder.mlpackage`, and
 `mobile_sam_prompt_encoder_weights.json` (all git-ignored). Re-run `xcodegen
 generate` so the project picks them up. Without them the other demos still run;
 ROI Zoom shows a "models not found" hint.
+
+## YOLOE models (Describe & Point demo)
+
+The **Describe & Point** demo uses YOLOE for open-vocabulary text-grounded
+detection (the "point" half — the VLM names objects, YOLOE localises them). Its
+Core ML models (~148 MB) are **not** committed — download them once from the
+`yoloe-v1` release of
+[`john-rocky/CoreML-Models`](https://github.com/john-rocky/CoreML-Models) and
+drop them into `Sources/Models/`:
+
+```sh
+cd Examples/ShelfScout/Sources/Models
+gh release download yoloe-v1 --repo john-rocky/CoreML-Models \
+  -p 'yoloe_detector_s.mlpackage.zip' \
+  -p 'reprta_s.mlpackage.zip' \
+  -p 'mobileclip_blt_text.mlpackage.zip' \
+  -p 'clip_vocab.json.zip'
+for z in *.zip; do unzip -q "$z" && rm "$z"; done
+find . -name '._*' -delete                    # tidy macOS resource forks
+mv yoloe_detector_s.mlpackage yoloe_detector.mlpackage
+mv reprta_s.mlpackage reprta.mlpackage
+```
+
+This yields `yoloe_detector.mlpackage` (~20 MB), `reprta.mlpackage` (~6 MB),
+`mobileclip_blt_text.mlpackage` (~121 MB), and `clip_vocab.json` (1.6 MB) — all
+git-ignored. Re-run `xcodegen generate` so Xcode bundles them (`.mlpackage` →
+`.mlmodelc`). Without them, the other demos still run; Describe & Point produces
+a caption but no boxes (the provider logs `YOLOE models failed to load`).
+
+The **S** detector is the default. To use the higher-accuracy **L** variant,
+swap `yoloe_detector_s` → `yoloe_detector_l` and `reprta_s` → `reprta_l` in the
+download step above — Swift needs no changes (the 512-dim embedding is shared
+across S/L).
 
 ## Sideloading the model via USB (debug)
 

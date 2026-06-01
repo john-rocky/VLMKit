@@ -102,12 +102,17 @@ let counts = try await pipeline.run(on: image)
 A macOS command-line tool to try recipes and benchmark, with no app required:
 
 ```bash
-swift run vlmkit-cli describe  photo.jpg
-swift run vlmkit-cli shelf     shelf.jpg --rows 3 --cols 3
-swift run vlmkit-cli form      invoice.jpg --fields "invoice_number,total,date"
-swift run vlmkit-cli checklist site.jpg   --items "Workers wear hard hats; Fire exit is clear"
-swift run vlmkit-cli bench     shelf.jpg  --runs 5 --model qwen3-4b
+swift run vlmkit-cli describe       photo.jpg
+swift run vlmkit-cli describepoint  photo.jpg --max 8
+swift run vlmkit-cli shelf          shelf.jpg --rows 3 --cols 3
+swift run vlmkit-cli form           invoice.jpg --fields "invoice_number,total,date"
+swift run vlmkit-cli checklist      site.jpg   --items "Workers wear hard hats; Fire exit is clear"
+swift run vlmkit-cli bench          shelf.jpg  --runs 5 --model qwen3-4b
 ```
+
+`describepoint` returns the **Describe & Point** recipe's JSON
+(`{caption, objects:[{phrase, query}]}`) — the VLM-only half of the demo. Boxes
+are produced by an on-device detector in the example app, not in the recipe.
 
 ## Models
 
