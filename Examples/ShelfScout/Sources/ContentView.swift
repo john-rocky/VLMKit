@@ -522,7 +522,10 @@ private struct SpotlightOverlay: View {
                     })
 
                 // Spotlight: dim the whole photo, punching a hole at each selected box.
-                if selectedKey != nil {
+                // Skip the dim when the selected row has no detection (e.g. a
+                // Document QA field whose OCR didn't find a match) — otherwise we
+                // would dim the photo for nothing.
+                if selectedKey != nil, !selected.isEmpty {
                     SpotlightDim(container: geo.size, holes: selected.map { Self.viewRect($0.box, in: fitted) })
                         .allowsHitTesting(false)
                 }

@@ -1,3 +1,4 @@
+import CoreGraphics
 import XCTest
 @testable import VLMKit
 
@@ -53,5 +54,82 @@ final class DocumentQATests: XCTestCase {
         let a = DocumentQA.cleanAnswer(DocumentQA.AnswerRaw(answer: "Not stated", evidence: nil))
         XCTAssertEqual(a.answer, "Not stated")
         XCTAssertNil(a.evidence)
+    }
+
+    // MARK: - locate (OCR-grounded field boxing)
+
+    private func box(_ x: CGFloat, _ y: CGFloat, _ w: CGFloat, _ h: CGFloat) -> CGRect {
+        CGRect(x: x, y: y, width: w, height: h)
+    }
+
+    func testLocateFindsExactSubstring() {
+        let fields = [DocumentField(label: "Model", value: "XJ-100A")]
+        let valueBox = box(0.4, 0.1, 0.2, 0.05)
+        let observations = [
+            OCRObservation(text: "Model Number", box: box(0.1, 0.1, 0.2, 0.05)),
+            OCRObservation(text: "XJ-100A", box: valueBox),
+        ]
+        XCTAssertEqual(DocumentQA.locate(fields: fields, in: observations)[0], valueBox)
+    }
+
+    /// When multiple observations contain the value, the tightest (shortest) one
+    /// wins — the narrow box around the value, not a wide line that mentions it.
+    func testLocatePicksTightestObservation() {
+        let fields = [DocumentField(label: "Model", value: "X-100")]
+        let tight = box(0.4, 0.1, 0.1, 0.05)
+        let wide = box(0.0, 0.1, 0.9, 0.05)
+        let observations = [
+            OCRObservation(text: "the model number is X-100 yes", box: wide),
+            OCRObservation(text: "X-100", box: tight),
+        ]
+        XCTAssertEqual(DocumentQA.locate(fields: fields, in: observations)[0], tight)
+    }
+
+    func testLocateIsCaseInsensitive() {
+        let fields = [DocumentField(label: "Code", value: "ABC")]
+        let observations = [OCRObservation(text: "abc", box: box(0, 0, 1, 1))]
+        XCTAssertNotNil(DocumentQA.locate(fields: fields, in: observations)[0])
+    }
+
+    /// Full-width Latin/digits/punctuation in OCR output match the half-width
+    /// field value the VLM extracted (common on Japanese signage/forms).
+    func testLocateFoldsFullwidthToHalfwidth() {
+        let fields = [DocumentField(label: "Code", value: "XJ-100")]
+        let observations = [OCRObservation(text: "ＸＪ-１００", box: box(0, 0, 1, 1))]
+        XCTAssertNotNil(DocumentQA.locate(fields: fields, in: observations)[0])
+    }
+
+    func testLocateMissingFieldIsAbsent() {
+        let fields = [
+            DocumentField(label: "A", value: "found"),
+            DocumentField(label: "B", value: "not present"),
+        ]
+        let observations = [OCRObservation(text: "found here", box: box(0, 0, 1, 1))]
+        let result = DocumentQA.locate(fields: fields, in: observations)
+        XCTAssertNotNil(result[0])
+        XCTAssertNil(result[1])
+    }
+
+    func testLocateIndexesAreStable() {
+        let fields = [
+            DocumentField(label: "A", value: "alpha"),
+            DocumentField(label: "B", value: "beta"),
+            DocumentField(label: "C", value: "gamma"),
+        ]
+        let alphaBox = box(0.1, 0.1, 0.1, 0.05)
+        let gammaBox = box(0.3, 0.3, 0.1, 0.05)
+        let observations = [
+            OCRObservation(text: "alpha", box: alphaBox),
+            // B (beta) has no observation — gap in the result, not a shift.
+            OCRObservation(text: "gamma", box: gammaBox),
+        ]
+        let result = DocumentQA.locate(fields: fields, in: observations)
+        XCTAssertEqual(result[0], alphaBox)
+        XCTAssertNil(result[1])
+        XCTAssertEqual(result[2], gammaBox)
+    }
+
+    func testNormalizeCollapsesWhitespace() {
+        XCTAssertEqual(DocumentQA.normalize("  Frame   No.\nXJ-100\t"), "frame no. xj-100")
     }
 }

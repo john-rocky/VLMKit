@@ -53,10 +53,10 @@ final class DemoViewModel: ObservableObject {
     /// — drawn on the photo when the user toggles the mask outline on.
     @Published private(set) var describeMaskImage: CGImage?
 
-    // Document QA: cached extraction for the current photo. Re-asking a question
-    // reuses these fields instead of re-running the slow extract pass. Keyed by the
-    // source UIImage identity so a new photo invalidates the cache automatically.
-    private var docCache: (image: UIImage, fields: [DocumentField])?
+    // Document QA: cached extraction + OCR-grounded boxes for the current photo.
+    // Re-asking a question reuses both passes instead of re-running them. Keyed by
+    // the source UIImage identity so a new photo invalidates the cache automatically.
+    private var docCache: (image: UIImage, fields: [DocumentField], boxes: [Int: CGRect])?
 
     // Default preset (~3 GB). Swap for `.smolVLM2` to test with a smaller, faster download.
     private let backend = MLXSwiftBackend(profile: .qwen3VL4B)
@@ -199,10 +199,15 @@ final class DemoViewModel: ObservableObject {
 
     // MARK: - Document QA
 
-    /// One VLM call reads every labeled value off the document; if the user typed a
-    /// question, a second VLM call answers it. The extracted fields are cached per
-    /// photo (keyed by `UIImage` identity), so a follow-up question on the same
-    /// photo runs only the answer pass — not the slow re-extract.
+    /// One VLM call reads every labeled value off the document, and in parallel a
+    /// Vision OCR pass recognizes the text so each extracted value can be boxed on
+    /// the photo (`DocumentQA.locate`). If the user typed a question, a second VLM
+    /// call answers it. Fields without an OCR match still appear in the list —
+    /// they just don't get a box (graceful degradation).
+    ///
+    /// Extract + OCR + boxes are cached per photo (keyed by `UIImage` identity),
+    /// so a follow-up question on the same photo runs only the answer pass — not
+    /// the slow re-extract or the OCR pass.
     private func analyzeDocumentQA(query: String) async {
         guard let uiImage = capturedImage,
               let vlmImage = VLMImage(uiImage: uiImage.normalizedUp()) else {
@@ -212,12 +217,20 @@ final class DemoViewModel: ObservableObject {
         phase = .running(done: 0, total: 0)
         do {
             let fields: [DocumentField]
+            let boxes: [Int: CGRect]
             if let cached = docCache, cached.image === uiImage {
                 fields = cached.fields
+                boxes = cached.boxes
             } else {
-                let extraction = try await DocumentQA.extract(on: vlmImage, runner: runner)
+                // VLM extract (~10 s, GPU) and Vision OCR (~0.5 s, CPU) are
+                // independent — run them in parallel so the OCR is free.
+                async let extractTask = DocumentQA.extract(on: vlmImage, runner: runner)
+                async let observationsTask = OCRProvider.recognize(cgImage: vlmImage.cgImage)
+                let extraction = try await extractTask
+                let observations = await observationsTask
                 fields = extraction.fields
-                docCache = (uiImage, fields)
+                boxes = DocumentQA.locate(fields: fields, in: observations)
+                docCache = (uiImage, fields, boxes)
             }
             let trimmedQuery = query.trimmingCharacters(in: .whitespacesAndNewlines)
             let summary: String?
@@ -227,13 +240,17 @@ final class DemoViewModel: ObservableObject {
             } else {
                 summary = nil
             }
+            let detections: [Detection] = fields.enumerated().compactMap { index, field in
+                guard let box = boxes[index] else { return nil }
+                return Detection(key: "doc-\(index)", label: field.label, detail: field.value, box: box)
+            }
             let result = DemoResult(
                 summary: summary,
                 headline: .init(value: fields.count, unit: "fields"),
                 rows: fields.enumerated().map { index, field in
                     AggregateRow(key: "doc-\(index)", label: field.label, trailing: nil, subtitle: field.value)
                 },
-                detections: []
+                detections: detections
             )
             phase = .result(result)
             resultCount += 1

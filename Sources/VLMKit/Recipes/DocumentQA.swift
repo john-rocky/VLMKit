@@ -1,3 +1,4 @@
+import CoreGraphics
 import Foundation
 
 /// One labeled value the VLM read off a document — a key (the printed field name)
@@ -9,6 +10,21 @@ public struct DocumentField: Sendable, Codable, Equatable {
     public init(label: String, value: String) {
         self.label = label
         self.value = value
+    }
+}
+
+/// One OCR observation — a piece of recognized text and where it sits on the page.
+/// `box` is image-normalized (0...1, top-left origin), matching VLMKit's convention.
+/// Recipes accept this generic type so they stay OCR-engine-agnostic; the caller
+/// runs the actual text recognition (Vision, Tesseract, …) and hands the
+/// observations in.
+public struct OCRObservation: Sendable, Equatable {
+    public let text: String
+    public let box: CGRect
+
+    public init(text: String, box: CGRect) {
+        self.text = text
+        self.box = box
     }
 }
 
@@ -144,5 +160,55 @@ public enum DocumentQA {
             answer: raw.answer.trimmingCharacters(in: .whitespacesAndNewlines),
             evidence: (trimmedEvidence?.isEmpty == false) ? trimmedEvidence : nil
         )
+    }
+
+    /// Locate each extracted field's value on the page from an OCR pass. The
+    /// caller runs the OCR (Vision, Tesseract, …) and hands the observations in;
+    /// this matching layer is OCR-engine-agnostic.
+    ///
+    /// Matching is case-insensitive, full-width→half-width folded (so "ＸＪ-１００"
+    /// matches "XJ-100"), and whitespace-collapsed. When several observations
+    /// contain the same value, the **tightest** one wins (the shortest containing
+    /// observation — assumed to be the most precise box around the value rather
+    /// than a wide line that happens to mention it).
+    ///
+    /// Returns: `fieldIndex` → image-normalized box (0...1, top-left). Fields
+    /// without a match are simply absent — the caller can render the row without
+    /// a box (graceful degradation, no crash).
+    public static func locate(
+        fields: [DocumentField],
+        in observations: [OCRObservation]
+    ) -> [Int: CGRect] {
+        let normalized = observations.map { (text: normalize($0.text), box: $0.box) }
+        var result: [Int: CGRect] = [:]
+        for (index, field) in fields.enumerated() {
+            let needle = normalize(field.value)
+            guard !needle.isEmpty else { continue }
+            var bestBox: CGRect?
+            var bestTightness: Double = 0
+            for entry in normalized {
+                guard !entry.text.isEmpty, entry.text.contains(needle) else { continue }
+                let tightness = Double(needle.count) / Double(entry.text.count)
+                if tightness > bestTightness {
+                    bestTightness = tightness
+                    bestBox = entry.box
+                }
+            }
+            if let bestBox { result[index] = bestBox }
+        }
+        return result
+    }
+
+    /// Lower-case, full-width→half-width fold, and whitespace-collapse — the
+    /// minimum so "ＸＪ-１００" matches "XJ-100" and "Frame No.   XJ-100" matches
+    /// "Frame No. XJ-100". Internal so tests can pin the shape; not promised as
+    /// public API.
+    static func normalize(_ text: String) -> String {
+        let folded = text.applyingTransform(.fullwidthToHalfwidth, reverse: false) ?? text
+        return folded
+            .lowercased()
+            .components(separatedBy: .whitespacesAndNewlines)
+            .filter { !$0.isEmpty }
+            .joined(separator: " ")
     }
 }
