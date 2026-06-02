@@ -80,6 +80,12 @@ let extraction = try await DocumentQA.extract(on: image, runner: runner)
 let answer = try await DocumentQA.ask("What is the frame number?", on: image, runner: runner)
 // answer.answer    → "XJ-100A"
 // answer.evidence  → "Frame No. XJ-100A"   (verbatim span on the page, or nil)
+
+// Optional: ground each extracted value back to a box on the photo using your own
+// OCR pass (Vision / Tesseract / …). The recipe is OCR-engine-agnostic.
+let observations: [OCRObservation] = …  // Vision: VNRecognizeTextRequest results
+let boxes = DocumentQA.locate(fields: extraction.fields, in: observations)
+// boxes[0] → CGRect(…)   (image-normalized, top-left). Absent when not found.
 ```
 
 ### α11 — Multi-item checklist
