@@ -67,6 +67,21 @@ let values = try await FormExtraction.extract(fields: fields, from: image, runne
 // ["invoice_number": "INV-2031", "total": "$1,240.00", "date": "2026-05-01"]
 ```
 
+### Document QA
+Auto-extract every labeled value off any printed page (machine plate, invoice,
+receipt, business card, form, …) into key/value pairs, and answer free-form
+questions about it. The free-form pass is a second call so callers can cache the
+extraction and re-ask without re-reading the whole page.
+
+```swift
+let extraction = try await DocumentQA.extract(on: image, runner: runner)
+// extraction.fields → [DocumentField("Model Number", "XJ-100A"), DocumentField("Date", "2026-06-01"), …]
+
+let answer = try await DocumentQA.ask("What is the frame number?", on: image, runner: runner)
+// answer.answer    → "XJ-100A"
+// answer.evidence  → "Frame No. XJ-100A"   (verbatim span on the page, or nil)
+```
+
 ### α11 — Multi-item checklist
 Task-axis fan-out: each requirement is judged in its own call against the same image, so verdicts stay independent and each carries a reason. This is the basis for the compliance (ζ) recipes.
 
@@ -106,6 +121,7 @@ swift run vlmkit-cli describe       photo.jpg
 swift run vlmkit-cli describepoint  photo.jpg --max 8
 swift run vlmkit-cli shelf          shelf.jpg --rows 3 --cols 3
 swift run vlmkit-cli form           invoice.jpg --fields "invoice_number,total,date"
+swift run vlmkit-cli docqa          plate.jpg  --ask "What is the frame number?"
 swift run vlmkit-cli checklist      site.jpg   --items "Workers wear hard hats; Fire exit is clear"
 swift run vlmkit-cli bench          shelf.jpg  --runs 5 --model qwen3-4b
 ```
@@ -113,6 +129,11 @@ swift run vlmkit-cli bench          shelf.jpg  --runs 5 --model qwen3-4b
 `describepoint` returns the **Describe & Point** recipe's JSON
 (`{caption, objects:[{phrase, query}]}`) — the VLM-only half of the demo. Boxes
 are produced by an on-device detector in the example app, not in the recipe.
+
+`docqa` is the **Document QA** recipe: with no `--ask`, it auto-extracts every
+labeled value off the page (`{fields:[{label,value}]}`); with `--ask`, it also
+answers the question (`{answer, evidence}`). Works on machine plates, invoices,
+receipts, business cards, forms — any printed page.
 
 ## Models
 

@@ -53,6 +53,11 @@ final class DemoViewModel: ObservableObject {
     /// — drawn on the photo when the user toggles the mask outline on.
     @Published private(set) var describeMaskImage: CGImage?
 
+    // Document QA: cached extraction for the current photo. Re-asking a question
+    // reuses these fields instead of re-running the slow extract pass. Keyed by the
+    // source UIImage identity so a new photo invalidates the cache automatically.
+    private var docCache: (image: UIImage, fields: [DocumentField])?
+
     // Default preset (~3 GB). Swap for `.smolVLM2` to test with a smaller, faster download.
     private let backend = MLXSwiftBackend(profile: .qwen3VL4B)
     private lazy var runner = VLMRunner(backend: backend)
@@ -123,6 +128,10 @@ final class DemoViewModel: ObservableObject {
             await analyzeDescribeAndPoint()
             return
         }
+        if selectedDemo.id == Demo.documentQA.id {         // two-call flow with per-photo cache
+            await analyzeDocumentQA(query: query)
+            return
+        }
         guard let run = selectedDemo.run else { return }   // tap-to-analyze demos don't run once
         guard let uiImage = capturedImage,
               let vlmImage = VLMImage(uiImage: uiImage.normalizedUp()) else {
@@ -186,6 +195,59 @@ final class DemoViewModel: ObservableObject {
         } catch {
             phase = .failed("Analysis failed: \(error)")
         }
+    }
+
+    // MARK: - Document QA
+
+    /// One VLM call reads every labeled value off the document; if the user typed a
+    /// question, a second VLM call answers it. The extracted fields are cached per
+    /// photo (keyed by `UIImage` identity), so a follow-up question on the same
+    /// photo runs only the answer pass — not the slow re-extract.
+    private func analyzeDocumentQA(query: String) async {
+        guard let uiImage = capturedImage,
+              let vlmImage = VLMImage(uiImage: uiImage.normalizedUp()) else {
+            phase = .failed("Could not read the image.")
+            return
+        }
+        phase = .running(done: 0, total: 0)
+        do {
+            let fields: [DocumentField]
+            if let cached = docCache, cached.image === uiImage {
+                fields = cached.fields
+            } else {
+                let extraction = try await DocumentQA.extract(on: vlmImage, runner: runner)
+                fields = extraction.fields
+                docCache = (uiImage, fields)
+            }
+            let trimmedQuery = query.trimmingCharacters(in: .whitespacesAndNewlines)
+            let summary: String?
+            if !trimmedQuery.isEmpty {
+                let answer = try await DocumentQA.ask(trimmedQuery, on: vlmImage, runner: runner)
+                summary = formatDocAnswer(question: trimmedQuery, answer: answer)
+            } else {
+                summary = nil
+            }
+            let result = DemoResult(
+                summary: summary,
+                headline: .init(value: fields.count, unit: "fields"),
+                rows: fields.enumerated().map { index, field in
+                    AggregateRow(key: "doc-\(index)", label: field.label, trailing: nil, subtitle: field.value)
+                },
+                detections: []
+            )
+            phase = .result(result)
+            resultCount += 1
+        } catch {
+            phase = .failed("Analysis failed: \(error)")
+        }
+    }
+
+    /// Pinned summary string for a Document QA answer — "Q / A" plus the optional
+    /// verbatim evidence the model cited from the page.
+    private func formatDocAnswer(question: String, answer: DocumentAnswer) -> String {
+        var lines = ["Q: \(question)", "A: \(answer.answer)"]
+        if let evidence = answer.evidence { lines.append("— “\(evidence)”") }
+        return lines.joined(separator: "\n")
     }
 
     // MARK: - Tap-to-analyze (ROI Zoom)

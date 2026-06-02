@@ -12,6 +12,7 @@ import VLMKit
 ///   vlmkit-cli crowd     <image> [--max N] [--ask "Q"]  α2 per-person VLM query → JSON
 ///   vlmkit-cli roizoom   <image> [--rect x,y,w,h] [--ask "Q"] P5 ROI zoom: overview + hi-res detail → JSON
 ///   vlmkit-cli form      <image> --fields "a,b,c"      α7 form extraction → JSON
+///   vlmkit-cli docqa     <image> [--ask "Q"] [--max N] Document QA: auto-extract + free-form Q → JSON
 ///   vlmkit-cli checklist <image> --items "a;b;c"       α11 checklist → JSON
 ///   vlmkit-cli bench     <image> [--runs N]            decode-speed benchmark
 ///
@@ -37,6 +38,7 @@ struct VLMKitCLI {
         case "crowd": try await crowd(options)
         case "roizoom": try await roizoom(options)
         case "form": try await form(options)
+        case "docqa": try await docqa(options)
         case "checklist": try await checklist(options)
         case "bench": try await bench(options)
         case "help", "-h", "--help": printUsage()
@@ -134,6 +136,33 @@ struct VLMKitCLI {
         printJSON(result)
     }
 
+    /// Document QA — auto-extract every labeled value the VLM can read off the page,
+    /// and optionally answer a free-form question about the page in the same run.
+    /// Without `--ask`, prints `{fields:[...]}`; with `--ask`, also prints
+    /// `{answer, evidence}`. Useful for sanity-checking precision on a target document
+    /// before wiring the demo into the iOS app.
+    static func docqa(_ options: Options) async throws {
+        let image = try loadImage(options)
+        let runner = try await makeRunner(options)
+        let maxFields = options.int("max", default: 16)
+        log("Extracting up to \(maxFields) field(s)…")
+        let extraction = try await DocumentQA.extract(on: image, runner: runner, maxFields: maxFields)
+        if let question = options.string("ask"), !question.isEmpty {
+            log("Asking: \(question)")
+            let answer = try await DocumentQA.ask(question, on: image, runner: runner)
+            struct AnswerOut: Encodable { let answer: String; let evidence: String? }
+            struct Out: Encodable { let fields: [DocumentField]; let question: String; let answer: AnswerOut }
+            printJSON(Out(
+                fields: extraction.fields,
+                question: question,
+                answer: AnswerOut(answer: answer.answer, evidence: answer.evidence)
+            ))
+        } else {
+            struct Out: Encodable { let fields: [DocumentField] }
+            printJSON(Out(fields: extraction.fields))
+        }
+    }
+
     static func checklist(_ options: Options) async throws {
         let image = try loadImage(options)
         guard let itemsArg = options.string("items") else { throw CLIError.missing("--items \"req1;req2;…\"") }
@@ -227,6 +256,7 @@ struct VLMKitCLI {
           vlmkit-cli crowd     <image> [--max N] [--ask "Q"]  α2 Crowd / per-person query → JSON
           vlmkit-cli roizoom   <image> [--rect x,y,w,h] [--ask "Q"] P5 ROI zoom: overview + hi-res detail → JSON
           vlmkit-cli form      <image> --fields "a,b,c"      α7 Form extraction → JSON
+          vlmkit-cli docqa     <image> [--ask "Q"] [--max N] Document QA: auto-extract + free-form Q → JSON
           vlmkit-cli checklist <image> --items "a;b;c"       α11 Checklist → JSON
           vlmkit-cli bench     <image> [--runs N]            Decode-speed benchmark
 
