@@ -24,7 +24,7 @@ struct Demo: Identifiable, Sendable {
         _ onProgress: @escaping @Sendable (_ done: Int, _ total: Int) -> Void
     ) async throws -> DemoResult)?
 
-    static let all: [Demo] = [.shelfInventory, .crowdAnalytics, .roiZoom, .describeAndPoint]
+    static let all: [Demo] = [.shelfInventory, .crowdAnalytics, .roiZoom, .describeAndPoint, .documentQA]
 }
 
 extension Demo {
@@ -83,6 +83,20 @@ extension Demo {
         name: "Describe & Point",
         gridDetail: nil,
         queryPlaceholder: nil,
+        isTapToAnalyze: false,
+        run: nil
+    )
+
+    /// "Document QA" — auto-extract every labeled value off the document (machine
+    /// plate, invoice, receipt, business card, form, …), then optionally answer a
+    /// free-form question about it ("What is the frame number?"). The extracted
+    /// fields are cached per photo, so re-asking is fast (one VLM call, not two).
+    /// Driven through the view model (caching + two-call flow), so `run` is nil.
+    static let documentQA = Demo(
+        id: "doc",
+        name: "Document QA",
+        gridDetail: nil,
+        queryPlaceholder: "Ask about the document (e.g. What is the frame number?)",
         isTapToAnalyze: false,
         run: nil
     )
