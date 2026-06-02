@@ -81,6 +81,12 @@ let answer = try await DocumentQA.ask("What is the frame number?", on: image, ru
 // answer.answer    → "XJ-100A"
 // answer.evidence  → "Frame No. XJ-100A"   (verbatim span on the page, or nil)
 
+// Pass `onPartialAnswer` to stream the answer letter-by-letter as the model
+// generates — drives a live typewriter UI with no fake animation.
+let streamed = try await DocumentQA.ask("…", on: image, runner: runner) { partial in
+    print(partial)   // "X" → "XJ" → "XJ-1" → … → "XJ-100A"
+}
+
 // Optional: ground each extracted value back to a box on the photo using your own
 // OCR pass (Vision / Tesseract / …). The recipe is OCR-engine-agnostic.
 let observations: [OCRObservation] = …  // Vision: VNRecognizeTextRequest results

@@ -53,10 +53,17 @@ final class DemoViewModel: ObservableObject {
     /// — drawn on the photo when the user toggles the mask outline on.
     @Published private(set) var describeMaskImage: CGImage?
 
-    // Document QA: cached extraction + OCR-grounded boxes for the current photo.
-    // Re-asking a question reuses both passes instead of re-running them. Keyed by
-    // the source UIImage identity so a new photo invalidates the cache automatically.
-    private var docCache: (image: UIImage, fields: [DocumentField], boxes: [Int: CGRect])?
+    // Document QA: cached extraction + OCR-grounded boxes + answers for the current
+    // photo. Re-asking a question reuses both passes instead of re-running them; an
+    // identical question hits the answers cache for an instant response (no VLM
+    // call). Keyed by the source UIImage identity so a new photo invalidates the
+    // cache automatically.
+    private var docCache: (
+        image: UIImage,
+        fields: [DocumentField],
+        boxes: [Int: CGRect],
+        answers: [String: DocumentAnswer]
+    )?
 
     // Default preset (~3 GB). Swap for `.smolVLM2` to test with a smaller, faster download.
     private let backend = MLXSwiftBackend(profile: .qwen3VL4B)
@@ -201,13 +208,16 @@ final class DemoViewModel: ObservableObject {
 
     /// One VLM call reads every labeled value off the document, and in parallel a
     /// Vision OCR pass recognizes the text so each extracted value can be boxed on
-    /// the photo (`DocumentQA.locate`). If the user typed a question, a second VLM
-    /// call answers it. Fields without an OCR match still appear in the list —
-    /// they just don't get a box (graceful degradation).
+    /// the photo (`DocumentQA.locate`). If the user typed a question, the answer
+    /// is **streamed** character-by-character into the pinned summary so the
+    /// typewriter is the model's own generation rather than a fake animation.
+    /// Fields without an OCR match still appear in the list — they just don't get
+    /// a box (graceful degradation).
     ///
-    /// Extract + OCR + boxes are cached per photo (keyed by `UIImage` identity),
-    /// so a follow-up question on the same photo runs only the answer pass — not
-    /// the slow re-extract or the OCR pass.
+    /// Caches per photo (keyed by `UIImage` identity):
+    /// - extract + OCR boxes → follow-up questions skip both passes
+    /// - answered questions → an identical question on the same photo returns
+    ///   instantly (no VLM call at all)
     private func analyzeDocumentQA(query: String) async {
         guard let uiImage = capturedImage,
               let vlmImage = VLMImage(uiImage: uiImage.normalizedUp()) else {
@@ -230,41 +240,77 @@ final class DemoViewModel: ObservableObject {
                 let observations = await observationsTask
                 fields = extraction.fields
                 boxes = DocumentQA.locate(fields: fields, in: observations)
-                docCache = (uiImage, fields, boxes)
+                docCache = (uiImage, fields, boxes, [:])
             }
-            let trimmedQuery = query.trimmingCharacters(in: .whitespacesAndNewlines)
-            let summary: String?
-            if !trimmedQuery.isEmpty {
-                let answer = try await DocumentQA.ask(trimmedQuery, on: vlmImage, runner: runner)
-                summary = formatDocAnswer(question: trimmedQuery, answer: answer)
-            } else {
-                summary = nil
-            }
+
             let detections: [Detection] = fields.enumerated().compactMap { index, field in
                 guard let box = boxes[index] else { return nil }
                 return Detection(key: "doc-\(index)", label: field.label, detail: field.value, box: box)
             }
-            let result = DemoResult(
-                summary: summary,
-                headline: .init(value: fields.count, unit: "fields"),
-                rows: fields.enumerated().map { index, field in
-                    AggregateRow(key: "doc-\(index)", label: field.label, trailing: nil, subtitle: field.value)
-                },
-                detections: detections
-            )
-            phase = .result(result)
+            let rows = fields.enumerated().map { index, field in
+                AggregateRow(key: "doc-\(index)", label: field.label, trailing: nil, subtitle: field.value)
+            }
+            let baseHeadline = DemoResult.Headline(value: fields.count, unit: "fields")
+
+            let trimmedQuery = query.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmedQuery.isEmpty else {
+                phase = .result(DemoResult(
+                    summary: nil, headline: baseHeadline, rows: rows, detections: detections
+                ))
+                resultCount += 1
+                return
+            }
+
+            // Answer cache hit: instant response, no VLM call.
+            if let cached = docCache?.answers[trimmedQuery] {
+                phase = .result(DemoResult(
+                    summary: formatDocAnswer(question: trimmedQuery, answer: cached),
+                    headline: baseHeadline, rows: rows, detections: detections
+                ))
+                resultCount += 1
+                return
+            }
+
+            // Stream the answer: bump phase per chunk so the summary types itself
+            // out as the model generates. resultCount is bumped only at the end so
+            // the (relatively expensive) Apple-Translation pass runs once on the
+            // final answer, not per chunk.
+            let answer = try await DocumentQA.ask(
+                trimmedQuery, on: vlmImage, runner: runner
+            ) { [weak self] partial in
+                Task { @MainActor in
+                    guard let self else { return }
+                    self.phase = .result(DemoResult(
+                        summary: self.formatStreamingAnswer(question: trimmedQuery, partial: partial),
+                        headline: baseHeadline, rows: rows, detections: detections
+                    ))
+                }
+            }
+
+            docCache?.answers[trimmedQuery] = answer
+            phase = .result(DemoResult(
+                summary: formatDocAnswer(question: trimmedQuery, answer: answer),
+                headline: baseHeadline, rows: rows, detections: detections
+            ))
             resultCount += 1
         } catch {
             phase = .failed("Analysis failed: \(error)")
         }
     }
 
-    /// Pinned summary string for a Document QA answer — "Q / A" plus the optional
+    /// Final summary for a Document QA answer — "Q / A" plus the optional
     /// verbatim evidence the model cited from the page.
     private func formatDocAnswer(question: String, answer: DocumentAnswer) -> String {
         var lines = ["Q: \(question)", "A: \(answer.answer)"]
         if let evidence = answer.evidence { lines.append("— “\(evidence)”") }
         return lines.joined(separator: "\n")
+    }
+
+    /// Live summary while the answer is still streaming. Trailing block cursor
+    /// makes it read as "the model is still typing" rather than "this is the
+    /// final answer".
+    private func formatStreamingAnswer(question: String, partial: String) -> String {
+        "Q: \(question)\nA: \(partial)▌"
     }
 
     // MARK: - Tap-to-analyze (ROI Zoom)

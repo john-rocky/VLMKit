@@ -132,4 +132,55 @@ final class DocumentQATests: XCTestCase {
     func testNormalizeCollapsesWhitespace() {
         XCTAssertEqual(DocumentQA.normalize("  Frame   No.\nXJ-100\t"), "frame no. xj-100")
     }
+
+    // MARK: - partialAnswer (streaming JSON extraction)
+
+    func testPartialAnswerNilBeforeKey() {
+        XCTAssertNil(DocumentQA.partialAnswer(in: ""))
+        XCTAssertNil(DocumentQA.partialAnswer(in: "{\"ans"))
+    }
+
+    func testPartialAnswerNilBeforeOpeningQuote() {
+        XCTAssertNil(DocumentQA.partialAnswer(in: #"{"answer""#))
+        XCTAssertNil(DocumentQA.partialAnswer(in: #"{"answer":"#))
+        XCTAssertNil(DocumentQA.partialAnswer(in: #"{"answer": "#))
+    }
+
+    /// The opening quote arrived but no chars yet — return an empty string so the
+    /// caller can render "started, no characters yet" rather than "not started".
+    func testPartialAnswerEmptyRightAfterOpeningQuote() {
+        XCTAssertEqual(DocumentQA.partialAnswer(in: #"{"answer":""#), "")
+    }
+
+    func testPartialAnswerGrowingValue() {
+        XCTAssertEqual(DocumentQA.partialAnswer(in: #"{"answer":"X"#), "X")
+        XCTAssertEqual(DocumentQA.partialAnswer(in: #"{"answer":"XJ"#), "XJ")
+        XCTAssertEqual(DocumentQA.partialAnswer(in: #"{"answer":"XJ-100"#), "XJ-100")
+    }
+
+    func testPartialAnswerClosedReturnsFullValue() {
+        XCTAssertEqual(DocumentQA.partialAnswer(in: #"{"answer":"XJ-100A""#), "XJ-100A")
+    }
+
+    func testPartialAnswerHandlesEscapedQuote() {
+        XCTAssertEqual(
+            DocumentQA.partialAnswer(in: #"{"answer":"He said \"hi\""#),
+            "He said \"hi\""
+        )
+    }
+
+    func testPartialAnswerHandlesNewlineEscape() {
+        XCTAssertEqual(DocumentQA.partialAnswer(in: #"{"answer":"a\nb"#), "a\nb")
+    }
+
+    /// A trailing `\` (escape arrived, escapee hasn't yet) must hold off — don't
+    /// emit the backslash, wait for the next chunk that brings the escapee.
+    func testPartialAnswerHoldsPendingEscape() {
+        XCTAssertEqual(DocumentQA.partialAnswer(in: #"{"answer":"a\"#), "a")
+    }
+
+    func testPartialAnswerStopsAtFirstClosingQuoteIgnoringEvidence() {
+        let text = #"{"answer":"XJ-100A","evidence":"Frame No. XJ-100A"}"#
+        XCTAssertEqual(DocumentQA.partialAnswer(in: text), "XJ-100A")
+    }
 }

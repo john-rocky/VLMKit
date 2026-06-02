@@ -125,10 +125,19 @@ public enum DocumentQA {
     /// supporting text when possible. `question` is the user's query in their own
     /// words — "What is the frame number?", "When does this expire?", "How much is
     /// the tax?".
+    ///
+    /// Pass `onPartialAnswer` to stream the `answer` field character-by-character
+    /// as the model generates it — useful for a live typewriter UI so the user
+    /// sees something appearing instead of staring at a spinner. The callback
+    /// receives the answer-so-far each time it grows; the function still returns
+    /// the final `DocumentAnswer` (with `evidence`) once generation completes.
+    /// Streaming skips the JSON-parse retry the single-shot path uses; on parse
+    /// failure it falls back to the partial answer with no evidence.
     public static func ask(
         _ question: String,
         on image: VLMImage,
-        runner: VLMRunner
+        runner: VLMRunner,
+        onPartialAnswer: (@Sendable (String) -> Void)? = nil
     ) async throws -> DocumentAnswer {
         let task = VLMTask<AnswerRaw>(
             instruction: """
@@ -149,8 +158,39 @@ public enum DocumentQA {
             jsonHint: #"{"answer": "short answer", "evidence": "verbatim span or empty"}"#,
             options: GenerationOptions(maxTokens: 256, temperature: 0.0)
         )
-        let raw = try await runner.run(task, images: [image])
-        return cleanAnswer(raw)
+        guard let onPartialAnswer else {
+            // Non-streaming path: VLMRunner.run handles the JSON-extract + retry.
+            return cleanAnswer(try await runner.run(task, images: [image]))
+        }
+        // Streaming path: feed the live answer-so-far to the callback as tokens
+        // arrive; at the end, parse the full JSON for `evidence`. No retry — the
+        // user already saw partial text, so on parse failure fall back to the
+        // partial answer with no evidence rather than re-running the call.
+        var accumulated = ""
+        var lastPublished = ""
+        for try await chunk in runner.backend.stream(
+            prompt: task.composedPrompt(),
+            system: task.system,
+            images: [image],
+            options: task.options
+        ) {
+            accumulated += chunk
+            if let partial = partialAnswer(in: accumulated), partial != lastPublished {
+                lastPublished = partial
+                onPartialAnswer(partial)
+            }
+        }
+        if let data = JSONExtraction.data(from: accumulated),
+           let raw = try? JSONDecoder().decode(AnswerRaw.self, from: data) {
+            return cleanAnswer(raw)
+        }
+        guard !lastPublished.isEmpty else {
+            throw VLMKitError.decodingFailed(raw: accumulated)
+        }
+        return DocumentAnswer(
+            answer: lastPublished.trimmingCharacters(in: .whitespacesAndNewlines),
+            evidence: nil
+        )
     }
 
     /// Trim the strings and turn an empty `evidence` into `nil`.
@@ -195,6 +235,47 @@ public enum DocumentQA {
                 }
             }
             if let bestBox { result[index] = bestBox }
+        }
+        return result
+    }
+
+    /// The running text of the JSON `"answer"` field as it accumulates during a
+    /// streaming ask. Returns nil until the value's opening quote appears, then a
+    /// growing string until the closing quote. Handles the common escape
+    /// sequences (`\n`, `\t`, `\"`, `\\`, `\/`). A trailing `\` (escape pending
+    /// its escapee) holds off rather than emit a partial, so the returned string
+    /// only contains finished characters. Internal so tests can pin the shape.
+    static func partialAnswer(in accumulated: String) -> String? {
+        guard let keyRange = accumulated.range(of: #""answer""#) else { return nil }
+        // Skip whitespace/colon between `"answer"` and the opening quote.
+        var index = keyRange.upperBound
+        while index < accumulated.endIndex, accumulated[index] != "\"" {
+            index = accumulated.index(after: index)
+        }
+        guard index < accumulated.endIndex else { return nil }
+        var cursor = accumulated.index(after: index)  // skip opening quote
+        var result = ""
+        while cursor < accumulated.endIndex {
+            let c = accumulated[cursor]
+            if c == "\\" {
+                let next = accumulated.index(after: cursor)
+                guard next < accumulated.endIndex else { break }  // pending escape
+                switch accumulated[next] {
+                case "n": result.append("\n")
+                case "t": result.append("\t")
+                case "r": result.append("\r")
+                case "\"": result.append("\"")
+                case "\\": result.append("\\")
+                case "/": result.append("/")
+                default: result.append(accumulated[next])
+                }
+                cursor = accumulated.index(after: next)
+            } else if c == "\"" {
+                return result  // closing quote
+            } else {
+                result.append(c)
+                cursor = accumulated.index(after: cursor)
+            }
         }
         return result
     }
