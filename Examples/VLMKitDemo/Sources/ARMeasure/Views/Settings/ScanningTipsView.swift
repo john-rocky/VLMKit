@@ -172,8 +172,8 @@ struct ScanningTipsView: View {
 }
 
 /// Tip entry: icon + title + body. Originally defined in `SettingsView.swift`
-/// (which we excluded when porting ProductMeasure into ShelfScout), so it now
-/// lives next to its sole consumer.
+/// (which we excluded when porting ProductMeasure into the example app), so it
+/// now lives next to its sole consumer.
 struct TipRow: View {
     let icon: String
     let title: LocalizedStringKey

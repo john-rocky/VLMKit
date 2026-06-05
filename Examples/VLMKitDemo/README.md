@@ -25,9 +25,10 @@ result below, with two-way result ↔ box highlighting):
   under the auto-tour, so each spoken object is grounded in pixels. The VLM
   names *what*; YOLOE finds *where*.
 
-> The app is named **VLMKit** on the home screen. Its Xcode project still lives in
-> `Examples/ShelfScout/` and the bundle id stays `com.vlmkit.example.shelfscout`
-> (so a model sideloaded into the existing app container is preserved).
+> The app is named **VLMKit** on the home screen. Its Xcode target lives at
+> `Examples/VLMKitDemo/`. The bundle id stays `com.vlmkit.example.shelfscout`
+> (the original target name) so a model sideloaded into the existing app
+> container is preserved.
 
 ## Requirements
 
@@ -40,9 +41,9 @@ result below, with two-way result ↔ box highlighting):
 ## Run
 
 ```sh
-cd Examples/ShelfScout
+cd Examples/VLMKitDemo
 xcodegen generate
-open ShelfScout.xcodeproj
+open VLMKitDemo.xcodeproj
 ```
 
 In Xcode: select your team under **Signing & Capabilities**, choose your
@@ -59,7 +60,7 @@ Core ML models (~23 MB) are **not** committed — download them once and drop th
 into `Sources/Models/` so Xcode bundles them:
 
 ```sh
-cd Examples/ShelfScout/Sources/Models
+cd Examples/VLMKitDemo/Sources/Models
 gh release download v1.0.0 --repo john-rocky/SamKit --pattern MobileSAM.zip
 unzip MobileSAM.zip && rm MobileSAM.zip
 ```
@@ -79,7 +80,7 @@ Core ML models (~148 MB) are **not** committed — download them once from the
 drop them into `Sources/Models/`:
 
 ```sh
-cd Examples/ShelfScout/Sources/Models
+cd Examples/VLMKitDemo/Sources/Models
 gh release download yoloe-v1 --repo john-rocky/CoreML-Models \
   -p 'yoloe_detector_s.mlpackage.zip' \
   -p 'reprta_s.mlpackage.zip' \
@@ -129,7 +130,7 @@ on-device Diffusion (see next section). The Pexels tab is hidden unless you've
 added your key:
 
 1. Sign up at [pexels.com/api](https://www.pexels.com/api/) (free, 200 req/h).
-2. Open `Examples/ShelfScout/Sources/Backgrounds/PexelsAPIKey.swift` and set
+2. Open `Examples/VLMKitDemo/Sources/Backgrounds/PexelsAPIKey.swift` and set
    `static let key = "your-key-here"`.
 3. Rebuild — the Pexels tab now appears in the Background Studio.
 
@@ -166,5 +167,5 @@ closes pays a cold-load (~30 s).
    target's Info settings.
 5. Run on a real device.
 
-The generated `ShelfScout.xcodeproj` is git-ignored — regenerate it any time with
+The generated `VLMKitDemo.xcodeproj` is git-ignored — regenerate it any time with
 `xcodegen generate`.

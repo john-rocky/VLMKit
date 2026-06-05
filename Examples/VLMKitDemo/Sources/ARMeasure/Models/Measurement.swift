@@ -48,7 +48,7 @@ final class ProductMeasurement {
 
     /// Optional annotated image (JPEG data).
     /// (Originally `@Attribute(.externalStorage)` for SwiftData — stripped along
-    /// with `@Model` when porting into ShelfScout; now a plain property.)
+    /// with `@Model` when porting into the example app; now a plain property.)
     var annotatedImageData: Data?
 
     /// User notes

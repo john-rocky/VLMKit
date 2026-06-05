@@ -1,4 +1,4 @@
-name: ShelfScout
+name: VLMKitDemo
 options:
   bundleIdPrefix: com.vlmkit.example
   deploymentTarget:
@@ -24,7 +24,7 @@ packages:
     from: 0.9.19
 
 targets:
-  ShelfScout:
+  VLMKitDemo:
     type: application
     platform: iOS
     sources:
@@ -44,8 +44,9 @@ targets:
         GENERATE_INFOPLIST_FILE: YES
         PRODUCT_BUNDLE_IDENTIFIER: com.vlmkit.example.shelfscout
         # App name shown on the home screen. The bundle id deliberately stays
-        # `.shelfscout` so the model sideloaded into the existing app container is
-        # preserved (the container is keyed by bundle id, not display name).
+        # `.shelfscout` (the original target name) so the model sideloaded into
+        # the existing app container is preserved — the container is keyed by
+        # bundle id, not display name or target name.
         INFOPLIST_KEY_CFBundleDisplayName: VLMKit
         MARKETING_VERSION: "1.0"
         CURRENT_PROJECT_VERSION: "1"
@@ -67,7 +68,7 @@ targets:
     # Raise the iOS per-app memory limit so the multi-GB VLM weights + activations
     # fit without jetsam killing the app (required for large on-device models).
     entitlements:
-      path: ShelfScout.entitlements
+      path: VLMKitDemo.entitlements
       properties:
         com.apple.developer.kernel.increased-memory-limit: true
         com.apple.developer.kernel.extended-virtual-addressing: true
