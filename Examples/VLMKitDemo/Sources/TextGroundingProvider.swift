@@ -51,12 +51,16 @@ final class TextGroundingProvider: ObservableObject {
     /// (0...1, top-left) box per query that was found, keyed by the query's index
     /// in `queries` (its YOLOE `classIndex`). A query may yield zero, one, or many
     /// boxes; the highest-confidence box per query is kept. Missing queries are
-    /// simply absent from the result. `maskImage` is the optional combined silhouette
-    /// overlay across all detections (each in its YOLOE class colour).
+    /// simply absent from the result. `maskImage` is the combined silhouette overlay
+    /// reduced to one detection per class (matches the top-1-per-query box semantics).
+    ///
+    /// The default `confidenceThreshold` is intentionally low: the VLM has already
+    /// confirmed that each query noun is in the frame, so we'd rather let a borderline
+    /// box through and still pick the best one per query than miss the object entirely.
     ///
     /// Callers must pass non-empty queries: the detector drops empty ones, which would
     /// shift every later `classIndex` and misattribute boxes.
-    func ground(cgImage: CGImage, queries: [String], confidenceThreshold: Float = 0.15) async -> GroundingResult {
+    func ground(cgImage: CGImage, queries: [String], confidenceThreshold: Float = 0.05) async -> GroundingResult {
         guard let detector, isReady, !queries.isEmpty else { return GroundingResult(boxes: [:], maskImage: nil) }
         // The detector splits the query string on commas, so a comma inside a query
         // would fragment it and shift every later classIndex; replace commas with
@@ -65,7 +69,7 @@ final class TextGroundingProvider: ObservableObject {
         let result: TextGroundingDetector.DetectionResult = await Task.detached(priority: .userInitiated) {
             detector.confidenceThreshold = confidenceThreshold
             detector.updateQueries(queryString)
-            return detector.detectSyncWithMasks(image: UIImage(cgImage: cgImage))
+            return detector.detectSyncWithMasks(image: UIImage(cgImage: cgImage), maskTopOnePerClass: true)
         }.value
 
         // classIndex == the index of the query in `queries`. Keep the top-confidence

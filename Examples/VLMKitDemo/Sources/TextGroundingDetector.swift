@@ -170,21 +170,25 @@ final class TextGroundingDetector: ObservableObject {
         guard let cgImage = cgImageFromPixelBuffer(pixelBuffer) else {
             return DetectionResult(detections: [], maskData: nil)
         }
-        return runDetection(cgImage: cgImage, needMasks: true)
+        return runDetection(cgImage: cgImage, needMasks: true, maskTopOnePerClass: false)
     }
 
     func detectSync(image: UIImage) -> DetectionResult {
         guard let cgImage = normalizedCGImage(image) else {
             return DetectionResult(detections: [], maskData: nil)
         }
-        return runDetection(cgImage: cgImage, needMasks: true)
+        return runDetection(cgImage: cgImage, needMasks: true, maskTopOnePerClass: false)
     }
 
     // MARK: - Detection with Masks (for photo mode)
 
-    func detectSyncWithMasks(image: UIImage) -> DetectionResult {
+    /// `maskTopOnePerClass` keeps only the highest-confidence detection per class in the
+    /// combined mask overlay. Used by Describe & Point, where the caller also reduces
+    /// boxes to top-1-per-class — without this, low-confidence runs paint repeated
+    /// same-color blobs for the same noun.
+    func detectSyncWithMasks(image: UIImage, maskTopOnePerClass: Bool = false) -> DetectionResult {
         guard let cgImage = normalizedCGImage(image) else { return DetectionResult(detections: [], maskData: nil) }
-        let result = runDetection(cgImage: cgImage, needMasks: true)
+        let result = runDetection(cgImage: cgImage, needMasks: true, maskTopOnePerClass: maskTopOnePerClass)
         lastMaskData = result.maskData
         return result
     }
@@ -196,7 +200,7 @@ final class TextGroundingDetector: ObservableObject {
 
     // MARK: - Core Detection
 
-    private func runDetection(cgImage: CGImage, needMasks: Bool) -> DetectionResult {
+    private func runDetection(cgImage: CGImage, needMasks: Bool, maskTopOnePerClass: Bool) -> DetectionResult {
         // Snapshot the text cache so a concurrent updateQueries() can't tear it.
         let textPrime = cachedTextPrime
         let queries = cachedQueries
@@ -288,7 +292,18 @@ final class TextGroundingDetector: ObservableObject {
                                   protos: readProtos(protosMA),
                                   numAnchors: numAnchors)
                 maskData = md
-                maskImage = buildCombinedMask(detections, md,
+                let maskDets: [Detection]
+                if maskTopOnePerClass {
+                    var best: [Int: Detection] = [:]
+                    for d in detections {
+                        if let cur = best[d.classIndex], cur.confidence >= d.confidence { continue }
+                        best[d.classIndex] = d
+                    }
+                    maskDets = Array(best.values)
+                } else {
+                    maskDets = detections
+                }
+                maskImage = buildCombinedMask(maskDets, md,
                                               padX: padX, padY: padY, scale: scale,
                                               imgW: imgW, imgH: imgH)
             }
