@@ -2,29 +2,52 @@ import CoreGraphics
 import Foundation
 
 /// One labeled value the VLM read off a document — a key (the printed field name)
-/// and its printed value, both copied verbatim from the page.
+/// and its printed value, both copied verbatim from the page. For multi-page
+/// documents, `page` is the 0-indexed page the field was read from; for single-page
+/// it stays 0. The page is set by the recipe after decoding the model's JSON, so the
+/// VLM's response shape stays the simpler `{label, value}` (page is not asked-for or
+/// trusted from the model).
 public struct DocumentField: Sendable, Codable, Equatable {
     public let label: String
     public let value: String
+    public let page: Int
 
-    public init(label: String, value: String) {
+    enum CodingKeys: String, CodingKey { case label, value }
+
+    public init(label: String, value: String, page: Int = 0) {
         self.label = label
         self.value = value
+        self.page = page
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.label = try container.decode(String.self, forKey: .label)
+        self.value = try container.decode(String.self, forKey: .value)
+        self.page = 0  // page is assigned by the recipe after decode.
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(label, forKey: .label)
+        try container.encode(value, forKey: .value)
     }
 }
 
 /// One OCR observation — a piece of recognized text and where it sits on the page.
 /// `box` is image-normalized (0...1, top-left origin), matching VLMKit's convention.
-/// Recipes accept this generic type so they stay OCR-engine-agnostic; the caller
-/// runs the actual text recognition (Vision, Tesseract, …) and hands the
-/// observations in.
+/// `page` is 0-indexed for multi-page documents (0 for single-page). Recipes accept
+/// this generic type so they stay OCR-engine-agnostic; the caller runs the actual
+/// text recognition (Vision, Tesseract, …) and hands the observations in.
 public struct OCRObservation: Sendable, Equatable {
     public let text: String
     public let box: CGRect
+    public let page: Int
 
-    public init(text: String, box: CGRect) {
+    public init(text: String, box: CGRect, page: Int = 0) {
         self.text = text
         self.box = box
+        self.page = page
     }
 }
 
@@ -41,6 +64,16 @@ public struct DocumentAnswer: Sendable {
     /// a later OCR pass can box this string on the photo to show *where* the value
     /// was read.
     public let evidence: String?
+    /// 0-indexed page the evidence was found on, or nil if the model couldn't (or
+    /// didn't need to) pinpoint a page. Always nil for single-page documents — the
+    /// caller already knows the page in that case.
+    public let page: Int?
+
+    public init(answer: String, evidence: String?, page: Int? = nil) {
+        self.answer = answer
+        self.evidence = evidence
+        self.page = page
+    }
 }
 
 /// Document Q&A — read a document's labeled fields, then answer free-form
@@ -64,41 +97,61 @@ public enum DocumentQA {
         let fields: [DocumentField]
     }
 
-    /// Read every labeled key/value pair visible on the document.
-    /// - `maxFields`: upper bound on returned pairs (default 16) — keeps the
-    ///   response within the token budget on busy documents.
+    /// Read every labeled key/value pair visible on a single-page document.
+    /// Convenience wrapper around the multi-page form.
     public static func extract(
         on image: VLMImage,
         runner: VLMRunner,
         maxFields: Int = 16
     ) async throws -> DocumentExtraction {
-        let task = VLMTask<ExtractionRaw>(
-            instruction: """
-            You are reading a document — a form, machine plate, label, invoice, \
-            receipt, business card, or any printed page. List every labeled value \
-            you can read off it as label/value pairs.
+        try await extract(on: [image], runner: runner, maxFieldsPerPage: maxFields)
+    }
 
-            For each field:
-            - "label": the printed name of the field, copied verbatim — short, \
-            e.g. "Model Number", "Date", "Total".
-            - "value": what is printed against that label, copied verbatim, in the \
-            language and casing it is written in. Numbers, codes, and dates stay \
-            as printed.
+    /// Read every labeled key/value pair visible across the pages of a document.
+    /// Each page is processed independently (one VLM call per page, sequential so
+    /// the actor-serialized backend isn't fighting itself) and the returned fields
+    /// are tagged with their 0-indexed page so the caller can group / display by page.
+    /// - `maxFieldsPerPage`: upper bound on returned pairs per page (default 16) —
+    ///   keeps each call within the token budget on busy pages.
+    public static func extract(
+        on pages: [VLMImage],
+        runner: VLMRunner,
+        maxFieldsPerPage: Int = 16
+    ) async throws -> DocumentExtraction {
+        var merged: [DocumentField] = []
+        for (pageIndex, image) in pages.enumerated() {
+            let task = VLMTask<ExtractionRaw>(
+                instruction: """
+                You are reading a document — a form, machine plate, label, invoice, \
+                receipt, business card, or any printed page. List every labeled value \
+                you can read off it as label/value pairs.
 
-            Rules:
-            - Only include fields you can actually read; do NOT invent values, \
-            and do NOT fill in fields that are blank or illegible.
-            - Skip running prose, legal fine print, and full sentences — \
-            label/value pairs only.
-            - Return at most \(maxFields) fields — the most prominent ones if the \
-            page has more.
-            - Output one JSON object in the shape specified.
-            """,
-            jsonHint: #"{"fields": [{"label": "printed field name", "value": "printed value"}]}"#,
-            options: GenerationOptions(maxTokens: 1024, temperature: 0.0)
-        )
-        let raw = try await runner.run(task, images: [image])
-        return DocumentExtraction(fields: clean(raw.fields, maxFields: maxFields))
+                For each field:
+                - "label": the printed name of the field, copied verbatim — short, \
+                e.g. "Model Number", "Date", "Total".
+                - "value": what is printed against that label, copied verbatim, in the \
+                language and casing it is written in. Numbers, codes, and dates stay \
+                as printed.
+
+                Rules:
+                - Only include fields you can actually read; do NOT invent values, \
+                and do NOT fill in fields that are blank or illegible.
+                - Skip running prose, legal fine print, and full sentences — \
+                label/value pairs only.
+                - Return at most \(maxFieldsPerPage) fields — the most prominent ones if \
+                the page has more.
+                - Output one JSON object in the shape specified.
+                """,
+                jsonHint: #"{"fields": [{"label": "printed field name", "value": "printed value"}]}"#,
+                options: GenerationOptions(maxTokens: 1024, temperature: 0.0)
+            )
+            let raw = try await runner.run(task, images: [image])
+            let cleaned = clean(raw.fields, maxFields: maxFieldsPerPage)
+            merged.append(contentsOf: cleaned.map {
+                DocumentField(label: $0.label, value: $0.value, page: pageIndex)
+            })
+        }
+        return DocumentExtraction(fields: merged)
     }
 
     /// Trim, drop blank-label / blank-value pairs (the model occasionally pads with
@@ -119,34 +172,75 @@ public enum DocumentQA {
     struct AnswerRaw: Codable, Sendable {
         let answer: String
         let evidence: String?
+        /// 1-indexed page the model cites the evidence from (matches the prompt's
+        /// `Page 1`, `Page 2`, … labels). Null / 0 / out-of-range means "not
+        /// pinpointed"; `cleanAnswer` collapses those to nil. Optional with a
+        /// nil default so single-page tests can build an `AnswerRaw` without it.
+        let page: Int?
+
+        init(answer: String, evidence: String?, page: Int? = nil) {
+            self.answer = answer
+            self.evidence = evidence
+            self.page = page
+        }
     }
 
-    /// Answer a free-form natural-language question about the document, citing the
-    /// supporting text when possible. `question` is the user's query in their own
-    /// words — "What is the frame number?", "When does this expire?", "How much is
-    /// the tax?".
-    ///
-    /// Pass `onPartialAnswer` to stream the `answer` field character-by-character
-    /// as the model generates it — useful for a live typewriter UI so the user
-    /// sees something appearing instead of staring at a spinner. The callback
-    /// receives the answer-so-far each time it grows; the function still returns
-    /// the final `DocumentAnswer` (with `evidence`) once generation completes.
-    /// Streaming skips the JSON-parse retry the single-shot path uses; on parse
-    /// failure it falls back to the partial answer with no evidence.
+    /// Single-page convenience for `ask` — wraps the multi-page form. The returned
+    /// answer's `page` is always nil (only one page in play, so there's nothing to
+    /// disambiguate).
     public static func ask(
         _ question: String,
         on image: VLMImage,
         runner: VLMRunner,
         onPartialAnswer: (@Sendable (String) -> Void)? = nil
     ) async throws -> DocumentAnswer {
+        try await ask(question, on: [image], runner: runner, onPartialAnswer: onPartialAnswer)
+    }
+
+    /// Answer a free-form natural-language question about a (possibly multi-page)
+    /// document, citing the supporting text and the page it came from. All pages
+    /// are passed to the model in one call so it can reason across them; the model
+    /// is told the page order in the prompt and asked to return a 1-indexed page
+    /// number for the cited evidence (converted to 0-indexed in the returned
+    /// `DocumentAnswer.page`).
+    ///
+    /// Pass `onPartialAnswer` to stream the `answer` field character-by-character
+    /// as the model generates it — useful for a live typewriter UI. The callback
+    /// receives the answer-so-far each time it grows; the function still returns
+    /// the final `DocumentAnswer` (with `evidence` and `page`) once generation
+    /// completes. Streaming skips the JSON-parse retry the single-shot path uses;
+    /// on parse failure it falls back to the partial answer with no evidence/page.
+    public static func ask(
+        _ question: String,
+        on pages: [VLMImage],
+        runner: VLMRunner,
+        onPartialAnswer: (@Sendable (String) -> Void)? = nil
+    ) async throws -> DocumentAnswer {
+        let pageCount = pages.count
+        let multiPage = pageCount > 1
+        let pageInstruction = multiPage
+            ? """
+              You are looking at \(pageCount) pages of one document, given in order as \
+              Page 1, Page 2, …, Page \(pageCount).
+              """
+            : "You are looking at a single-page document."
+        let pageField = multiPage
+            ? """
+              - "page": the 1-indexed page number the evidence appears on (1…\(pageCount)). \
+              Use 0 if you cannot point to a single page.
+              """
+            : ""
+        let pageHint = multiPage ? #", "page": 1"# : ""
         let task = VLMTask<AnswerRaw>(
             instruction: """
-            You are answering a question about a document — a form, machine plate, \
-            label, invoice, receipt, business card, or any printed page.
+            \(pageInstruction)
+
+            You are answering a question about it — a form, machine plate, label, \
+            invoice, receipt, business card, contract, manual, or any printed page.
 
             Question: \(question)
 
-            Answer based ONLY on what is printed on the document.
+            Answer based ONLY on what is printed on the page(s).
 
             - "answer": a short, direct answer to the question, in the same \
             language as the question. If the document does not contain the \
@@ -154,24 +248,23 @@ public enum DocumentQA {
             - "evidence": the verbatim phrase from the document that supports the \
             answer — a single short span, typically the label or the value. Use \
             an empty string if you cannot point to a specific span.
+            \(pageField)
             """,
-            jsonHint: #"{"answer": "short answer", "evidence": "verbatim span or empty"}"#,
+            jsonHint: #"{"answer": "short answer", "evidence": "verbatim span or empty"\#(pageHint)}"#,
             options: GenerationOptions(maxTokens: 256, temperature: 0.0)
         )
         guard let onPartialAnswer else {
-            // Non-streaming path: VLMRunner.run handles the JSON-extract + retry.
-            return cleanAnswer(try await runner.run(task, images: [image]))
+            return cleanAnswer(
+                try await runner.run(task, images: pages),
+                pageCount: pageCount
+            )
         }
-        // Streaming path: feed the live answer-so-far to the callback as tokens
-        // arrive; at the end, parse the full JSON for `evidence`. No retry — the
-        // user already saw partial text, so on parse failure fall back to the
-        // partial answer with no evidence rather than re-running the call.
         var accumulated = ""
         var lastPublished = ""
         for try await chunk in runner.backend.stream(
             prompt: task.composedPrompt(),
             system: task.system,
-            images: [image],
+            images: pages,
             options: task.options
         ) {
             accumulated += chunk
@@ -182,23 +275,32 @@ public enum DocumentQA {
         }
         if let data = JSONExtraction.data(from: accumulated),
            let raw = try? JSONDecoder().decode(AnswerRaw.self, from: data) {
-            return cleanAnswer(raw)
+            return cleanAnswer(raw, pageCount: pageCount)
         }
         guard !lastPublished.isEmpty else {
             throw VLMKitError.decodingFailed(raw: accumulated)
         }
         return DocumentAnswer(
             answer: lastPublished.trimmingCharacters(in: .whitespacesAndNewlines),
-            evidence: nil
+            evidence: nil,
+            page: nil
         )
     }
 
-    /// Trim the strings and turn an empty `evidence` into `nil`.
-    static func cleanAnswer(_ raw: AnswerRaw) -> DocumentAnswer {
+    /// Trim the strings, turn an empty `evidence` into `nil`, and convert the
+    /// model's 1-indexed page (or nil/0/out-of-range) to a 0-indexed `Int?`.
+    static func cleanAnswer(_ raw: AnswerRaw, pageCount: Int = 1) -> DocumentAnswer {
         let trimmedEvidence = raw.evidence?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let page: Int? = {
+            guard pageCount > 1, let oneIndexed = raw.page, (1...pageCount).contains(oneIndexed) else {
+                return nil
+            }
+            return oneIndexed - 1
+        }()
         return DocumentAnswer(
             answer: raw.answer.trimmingCharacters(in: .whitespacesAndNewlines),
-            evidence: (trimmedEvidence?.isEmpty == false) ? trimmedEvidence : nil
+            evidence: (trimmedEvidence?.isEmpty == false) ? trimmedEvidence : nil,
+            page: page
         )
     }
 
@@ -210,23 +312,25 @@ public enum DocumentQA {
     /// matches "XJ-100"), and whitespace-collapsed. When several observations
     /// contain the same value, the **tightest** one wins (the shortest containing
     /// observation — assumed to be the most precise box around the value rather
-    /// than a wide line that happens to mention it).
+    /// than a wide line that happens to mention it). Matches are constrained to
+    /// the field's own page so a value on page 3 isn't accidentally boxed against
+    /// an identical string on page 1.
     ///
-    /// Returns: `fieldIndex` → image-normalized box (0...1, top-left). Fields
-    /// without a match are simply absent — the caller can render the row without
-    /// a box (graceful degradation, no crash).
+    /// Returns: `fieldIndex` → image-normalized box (0...1, top-left) on
+    /// `fields[fieldIndex].page`. Fields without a match are simply absent — the
+    /// caller can render the row without a box (graceful degradation, no crash).
     public static func locate(
         fields: [DocumentField],
         in observations: [OCRObservation]
     ) -> [Int: CGRect] {
-        let normalized = observations.map { (text: normalize($0.text), box: $0.box) }
+        let normalized = observations.map { (text: normalize($0.text), box: $0.box, page: $0.page) }
         var result: [Int: CGRect] = [:]
         for (index, field) in fields.enumerated() {
             let needle = normalize(field.value)
             guard !needle.isEmpty else { continue }
             var bestBox: CGRect?
             var bestTightness: Double = 0
-            for entry in normalized {
+            for entry in normalized where entry.page == field.page {
                 guard !entry.text.isEmpty, entry.text.contains(needle) else { continue }
                 let tightness = Double(needle.count) / Double(entry.text.count)
                 if tightness > bestTightness {

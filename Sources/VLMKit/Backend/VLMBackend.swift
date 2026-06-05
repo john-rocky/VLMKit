@@ -48,6 +48,13 @@ public protocol VLMBackend: Sendable {
     /// Download (if needed) and load the model into memory.
     func load(onProgress: (@Sendable (Double) -> Void)?) async throws
 
+    /// Drop the in-memory model so a co-resident on-device pipeline (e.g. an
+    /// on-device diffusion model in the Background Studio) can use the GPU/ANE
+    /// and RAM the VLM was occupying. The next `load*` call cold-loads the
+    /// weights again. The default is a no-op so backends with cheap models or
+    /// no jetsam pressure don't have to implement it.
+    func unload() async
+
     /// Run one generation and return the full text once complete.
     func generate(
         prompt: String,
@@ -69,6 +76,8 @@ public extension VLMBackend {
     func load() async throws {
         try await load(onProgress: nil)
     }
+
+    func unload() async {}
 
     func generate(
         prompt: String,

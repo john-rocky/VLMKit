@@ -48,6 +48,15 @@ public actor MLXSwiftBackend: VLMBackend {
         )
     }
 
+    /// Release the loaded container so the on-device GPU/RAM it occupied is
+    /// returned to the system. Used by Background Studio's Diffusion mode to
+    /// hand RAM to HyperSD; the next `load*` cold-loads the weights again
+    /// (≈30 s on first run after this).
+    public func unload() async {
+        container = nil
+        MLX.Memory.clearCache()
+    }
+
     private func loaded() throws -> ModelContainer {
         guard let container else { throw VLMKitError.modelNotLoaded }
         return container
