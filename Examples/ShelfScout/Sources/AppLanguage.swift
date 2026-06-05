@@ -42,7 +42,7 @@ func localized(_ result: DemoResult, using cache: [String: String]) -> DemoResul
             AggregateRow(key: $0.key, label: tr($0.label), trailing: $0.trailing, subtitle: $0.subtitle.map(tr))
         },
         detections: result.detections.map {
-            Detection(id: $0.id, key: $0.key, label: tr($0.label), detail: $0.detail.map(tr), box: $0.box)
+            Detection(id: $0.id, key: $0.key, label: tr($0.label), detail: $0.detail.map(tr), box: $0.box, page: $0.page)
         }
     )
 }

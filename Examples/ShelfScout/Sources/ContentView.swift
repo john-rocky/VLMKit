@@ -30,6 +30,18 @@ struct ContentView: View {
     @State private var outConfig: TranslationSession.Configuration?
     @State private var jaCache: [String: String] = [:]   // English → Japanese (output)
     @State private var pendingRun: PendingRun?
+    /// Listing: drives the Background Studio modal that lifts the subject and
+    /// composites a chosen background onto it.
+    @State private var showBackgroundStudio = false
+    /// AR Measure: presents the ported ARMeasurementView full-screen over the
+    /// shell. Selecting the AR Measure demo from the picker swaps the capture
+    /// controls for a Start button that flips this on.
+    @State private var showARMeasure = false
+    /// Receipt: the bottom panel is too short to show every line item, so the
+    /// extracted card opens in a detents sheet. Flipped on automatically when a
+    /// receipt result lands (see `.onChange(of: vm.resultCount)`); the user
+    /// can dismiss and re-open from the summary tile.
+    @State private var showReceiptSheet = false
 
     private var language: AppLanguage { AppLanguage(rawValue: languageRaw) ?? .english }
 
@@ -43,13 +55,44 @@ struct ContentView: View {
                     .frame(maxHeight: .infinity)
             }
         }
-        .task { await vm.loadModelIfNeeded() }
+        // Model preload is kicked off by DemoViewModel.init (= app launch); no
+        // .task hook needed here. loadModelIfNeeded is idempotent if anything else
+        // ever wants to re-trigger it.
         .sheet(item: $picker) { kind in
-            ImagePicker(sourceType: kind.source) { image in
-                resetSelection()
-                requestRun(.newImage(image))
+            switch kind {
+            case .camera, .library:
+                ImagePicker(sourceType: kind.imagePickerSource!) { image in
+                    let demo = vm.selectedDemo
+                    resetSelection()
+                    if demo.usesDocumentScanner {
+                        // Library photos of documents get the same perspective
+                        // correction the scanner camera does at capture time.
+                        Task {
+                            let rectified = await DocumentRectifier.rectify(image)
+                            await MainActor.run { requestRun(.newImage([rectified])) }
+                        }
+                    } else {
+                        requestRun(.newImage([image]))
+                    }
+                }
+                .ignoresSafeArea()
+            case .scanner:
+                // All scanned pages flow into Document QA's multi-page pipeline.
+                DocumentScannerView { pages in
+                    guard !pages.isEmpty else { return }
+                    resetSelection()
+                    requestRun(.newImage(pages))
+                }
+                .ignoresSafeArea()
+            case .multiPhoto:
+                // Listing: pick 1–5 angle photos of the same item.
+                MultiPhotoPicker(selectionLimit: 5) { images in
+                    guard !images.isEmpty else { return }
+                    resetSelection()
+                    requestRun(.newImage(images))
+                }
+                .ignoresSafeArea()
             }
-            .ignoresSafeArea()
         }
         // Translate the model's English answer to Japanese for display.
         .translationTask(outConfig) { session in await translateOutput(using: session) }
@@ -58,6 +101,89 @@ struct ContentView: View {
         .onChange(of: vm.resultCount) { triggerOutputTranslation() }
         .onChange(of: languageRaw) { triggerOutputTranslation() }
         .onChange(of: query) { englishQuery = "" }
+        // Selecting a row/box from another page in a multi-page Document QA scan
+        // auto-flips the page picker so the highlighted box is actually visible.
+        .onChange(of: selectedKey) { _, newKey in flipToSelectedPage(newKey) }
+        // Background Studio for the Listing demo. Uses the first captured page
+        // as the basis (hero shot) and SharedVLM.runner for VLM calls.
+        .sheet(isPresented: $showBackgroundStudio) { backgroundStudioSheet }
+        // Receipt: full card (line items + export) in a detents sheet so each
+        // row is actually readable. Auto-opens when a new receipt result lands.
+        .sheet(isPresented: $showReceiptSheet) {
+            if let data = vm.receiptData {
+                NavigationStack {
+                    ScrollView {
+                        ReceiptCard(data: data).padding()
+                    }
+                    .navigationTitle("Receipt")
+                    .navigationBarTitleDisplayMode(.inline)
+                    .toolbar {
+                        ToolbarItem(placement: .topBarTrailing) {
+                            Button("Done") { showReceiptSheet = false }
+                        }
+                    }
+                }
+                .presentationDetents([.medium, .large])
+                .presentationDragIndicator(.visible)
+            }
+        }
+        .onChange(of: vm.resultCount) {
+            if vm.selectedDemo.id == Demo.receipt.id, vm.receiptData != nil {
+                showReceiptSheet = true
+            }
+        }
+        // AR Measure: the ported ARMeasurementView gets the whole screen. A
+        // floating close button is the only chrome added on top.
+        .fullScreenCover(isPresented: $showARMeasure) {
+            ZStack(alignment: .topTrailing) {
+                ARMeasurementView()
+                    .ignoresSafeArea()
+                Button {
+                    showARMeasure = false
+                } label: {
+                    Image(systemName: "xmark.circle.fill")
+                        .font(.title)
+                        .symbolRenderingMode(.palette)
+                        .foregroundStyle(.white, .black.opacity(0.55))
+                        .padding(.top, 6)
+                        .padding(.trailing, 12)
+                }
+                .accessibilityLabel("Close AR Measure")
+            }
+        }
+    }
+
+    @ViewBuilder private var backgroundStudioSheet: some View {
+        if let source = vm.capturedPages.first,
+           let vlmImage = VLMImage(uiImage: source.normalizedUp()) {
+            BackgroundStudioView(
+                sourceImage: source.normalizedUp(),
+                vlmImage: vlmImage,
+                runner: SharedVLM.runner,
+                onApply: { composed in vm.listingHeroImage = composed }
+            )
+        } else {
+            // Defensive: sheet shouldn't open without a captured page, but if
+            // it does, show a clear empty state instead of a blank modal.
+            VStack(spacing: 8) {
+                Image(systemName: "photo").font(.title)
+                Text("No photo to work with.").font(.callout)
+            }
+            .padding()
+        }
+    }
+
+    /// If the just-selected detection lives on a page other than the one being shown,
+    /// move the page picker to it. No-op for single-page or for detections without a
+    /// page tag (other demos).
+    private func flipToSelectedPage(_ key: String?) {
+        guard let key,
+              case .result(let result) = vm.phase,
+              let detection = result.detections.first(where: { $0.key == key }),
+              let page = detection.page,
+              page != vm.currentPageIndex,
+              vm.capturedPages.indices.contains(page) else { return }
+        vm.currentPageIndex = page
     }
 
     // MARK: - Input (top half) — photo, spotlight overlay, language + tour buttons.
@@ -65,7 +191,7 @@ struct ContentView: View {
     @ViewBuilder private var imageArea: some View {
         ZStack {
             Color(.secondarySystemBackground)
-            if let image = vm.capturedImage {
+            if let image = vm.displayedImage {
                 Image(uiImage: image)
                     .resizable()
                     .scaledToFit()
@@ -85,20 +211,38 @@ struct ContentView: View {
                             .opacity(0.55)
                             .allowsHitTesting(false)
                     }
-                    SpotlightOverlay(
-                        imageSize: image.size,
-                        detections: shown.detections,
-                        selectedKey: selectedKey,
-                        onTap: handleTap,
-                        onTapPoint: vm.selectedDemo.isTapToAnalyze
-                            ? { point in Task { await vm.addROI(atNormalizedPoint: point) } }
-                            : nil
-                    )
-                    if !shown.detections.isEmpty {
+                    // For multi-page Document QA, only show detections from the page
+                    // the user is currently viewing. Other demos leave Detection.page
+                    // nil, so the filter is a no-op for them.
+                    let pageDetections = shown.detections.filter {
+                        $0.page == nil || $0.page == vm.currentPageIndex
+                    }
+                    if vm.selectedDemo.usesDocumentScanner {
+                        // Cyber HUD: every detected field's box + label floats on the
+                        // photo (no dim-others spotlight); tapping a row still
+                        // highlights the matching one.
+                        DocumentHUDOverlay(
+                            imageSize: image.size,
+                            detections: pageDetections,
+                            selectedKey: selectedKey,
+                            onTap: handleTap
+                        )
+                    } else {
+                        SpotlightOverlay(
+                            imageSize: image.size,
+                            detections: pageDetections,
+                            selectedKey: selectedKey,
+                            onTap: handleTap,
+                            onTapPoint: vm.selectedDemo.isTapToAnalyze
+                                ? { point in Task { await vm.addROI(atNormalizedPoint: point) } }
+                                : nil
+                        )
+                    }
+                    if !pageDetections.isEmpty {
                         trailingPhotoControls
                     }
                     if vm.selectedDemo.isTapToAnalyze {
-                        roiHint(hasRegions: !shown.detections.isEmpty)
+                        roiHint(hasRegions: !pageDetections.isEmpty)
                     }
                 }
                 if vm.isSegmenting || vm.roiDetailInFlight > 0 {
@@ -183,11 +327,69 @@ struct ContentView: View {
             .allowsHitTesting(false)
     }
 
+    /// Compact receipt summary used in the bottom panel — merchant, total, item
+    /// count, and a chevron prompting the user to tap. Tapping opens the full
+    /// `ReceiptCard` in a detents sheet (where the line items have room).
+    @ViewBuilder private func receiptSummaryTile(data: ReceiptData) -> some View {
+        Button {
+            showReceiptSheet = true
+        } label: {
+            HStack(alignment: .firstTextBaseline, spacing: 12) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(data.merchant ?? "Receipt")
+                        .font(.headline).lineLimit(1)
+                        .foregroundStyle(.primary)
+                    Text("\(data.items.count) item\(data.items.count == 1 ? "" : "s")")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+                Spacer()
+                if let total = data.total {
+                    VStack(alignment: .trailing, spacing: 2) {
+                        Text(formatReceiptTotal(total, currency: data.currency))
+                            .font(.title3).bold().monospacedDigit()
+                            .foregroundStyle(.primary)
+                        if let date = data.date {
+                            Text(date).font(.caption2).foregroundStyle(.secondary)
+                        }
+                    }
+                }
+                Image(systemName: "chevron.up.circle.fill")
+                    .font(.title2)
+                    .foregroundStyle(.tint)
+            }
+            .padding(14)
+            .frame(maxWidth: .infinity)
+            .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 14))
+            .overlay(
+                RoundedRectangle(cornerRadius: 14)
+                    .strokeBorder(.tint.opacity(0.2), lineWidth: 0.5)
+            )
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func formatReceiptTotal(_ total: Double, currency: String?) -> String {
+        let f = NumberFormatter()
+        f.numberStyle = .decimal
+        f.minimumFractionDigits = 0
+        f.maximumFractionDigits = 2
+        let amount = f.string(from: NSNumber(value: total)) ?? String(format: "%.2f", total)
+        if let currency, !currency.isEmpty { return "\(currency) \(amount)" }
+        return amount
+    }
+
     // MARK: - Output (bottom half) — demo picker, result, pinned controls.
 
     @ViewBuilder private var bottomPanel: some View {
         VStack(spacing: 12) {
             demoPicker
+            // Page picker is shown for multi-image demos (Document QA pages,
+            // Listing angle photos). Other demos treat `currentPageIndex` as 0.
+            let isMultiImageDemo = vm.selectedDemo.id == Demo.documentQA.id
+                || vm.selectedDemo.id == Demo.listing.id
+            if isMultiImageDemo && vm.capturedPages.count > 1 {
+                pagePicker
+            }
             stateContent
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
             if showsControls {
@@ -197,21 +399,66 @@ struct ContentView: View {
         .padding()
     }
 
-    private var demoPicker: some View {
-        // Switching the demo reuses the loaded model; it just clears the old result.
-        Picker("Demo", selection: Binding(
-            get: { vm.selectedDemo.id },
-            set: { id in
-                guard let demo = vm.demos.first(where: { $0.id == id }) else { return }
-                resetSelection()
-                vm.select(demo)
-            }
-        )) {
-            ForEach(vm.demos) { demo in
-                Text(demo.name).tag(demo.id)
+    /// Segmented page selector for a multi-page Document QA scan. Binds to
+    /// `vm.currentPageIndex` so flipping pages updates the photo, the spotlight
+    /// filter, and (via the answer's cited page) auto-navigation.
+    private var pagePicker: some View {
+        Picker("Page", selection: $vm.currentPageIndex) {
+            ForEach(vm.capturedPages.indices, id: \.self) { index in
+                Text("\(index + 1)").tag(index)
             }
         }
         .pickerStyle(.segmented)
+        .disabled(vm.isBusy)
+    }
+
+    /// Switching the demo reuses the loaded model; it just clears the old result.
+    /// Horizontally scrollable pill row instead of a segmented picker — with the
+    /// demo count past 5 the segmented control gets unreadably narrow. Selected
+    /// pill auto-scrolls into view so a tour-of-demos feels coherent.
+    private var demoPicker: some View {
+        ScrollViewReader { proxy in
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 6) {
+                    ForEach(vm.demos) { demo in
+                        demoPill(for: demo)
+                            .id(demo.id)
+                    }
+                }
+                .padding(.horizontal, 2)
+                .padding(.vertical, 2)
+            }
+            .onAppear {
+                proxy.scrollTo(vm.selectedDemo.id, anchor: .center)
+            }
+            .onChange(of: vm.selectedDemo.id) { _, id in
+                withAnimation(.easeInOut(duration: 0.2)) {
+                    proxy.scrollTo(id, anchor: .center)
+                }
+            }
+        }
+    }
+
+    @ViewBuilder private func demoPill(for demo: Demo) -> some View {
+        let isSelected = demo.id == vm.selectedDemo.id
+        Button {
+            guard !isSelected else { return }
+            resetSelection()
+            vm.select(demo)
+        } label: {
+            Text(demo.name)
+                .font(.subheadline)
+                .lineLimit(1)
+                .fixedSize(horizontal: true, vertical: false)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 6)
+                .background(
+                    isSelected ? Color.accentColor : Color(.secondarySystemBackground),
+                    in: Capsule()
+                )
+                .foregroundStyle(isSelected ? .white : .primary)
+        }
+        .buttonStyle(.plain)
         .disabled(vm.isBusy)
     }
 
@@ -238,13 +485,40 @@ struct ContentView: View {
         case .ready:
             readyHint
         case .result(let result):
-            ResultView(
-                result: displayed(result),
-                summaryPending: vm.roiSummaryPending,
-                selectedKey: selectedKey,
-                onTapKey: handleTap,
-                highlightsCaptionMentions: vm.selectedDemo.id == Demo.describeAndPoint.id
-            )
+            if vm.selectedDemo.id == Demo.receipt.id, let data = vm.receiptData {
+                // Receipt: compact summary tile in the bottom panel; the full
+                // card (line items + export) opens in a sheet so it has room.
+                receiptSummaryTile(data: data)
+            } else if vm.selectedDemo.id == Demo.businessCard.id, let data = vm.businessCardData {
+                // Business Card opens a CNContactViewController preview when the
+                // user taps Save — bespoke card displays the extracted contact.
+                BusinessCardCard(data: data)
+            } else if vm.selectedDemo.id == Demo.idDocument.id, let data = vm.idDocumentData {
+                // ID has a privacy-first bespoke card with a Vision face crop
+                // and a Copy JSON button for downstream KYC workflows.
+                IDDocumentCard(data: data, face: vm.idDocumentFace)
+            } else if vm.selectedDemo.id == Demo.listing.id, let data = vm.listingData {
+                // Listing has a draft + a refinement TextField that re-runs
+                // the VLM with the previous draft + the user's instruction.
+                ListingCard(
+                    data: data,
+                    isRefining: vm.isRefiningListing,
+                    hasHeroImage: vm.listingHeroImage != nil,
+                    onRefine: { instruction in
+                        Task { await vm.refineListing(instruction: instruction) }
+                    },
+                    onGenerateBackground: { showBackgroundStudio = true },
+                    onClearHero: { vm.listingHeroImage = nil }
+                )
+            } else {
+                ResultView(
+                    result: displayed(result),
+                    summaryPending: vm.roiSummaryPending,
+                    selectedKey: selectedKey,
+                    onTapKey: handleTap,
+                    highlightsCaptionMentions: vm.selectedDemo.id == Demo.describeAndPoint.id
+                )
+            }
         case .failed(let message):
             Label(message, systemImage: "exclamationmark.triangle")
                 .foregroundStyle(.red)
@@ -278,6 +552,18 @@ struct ContentView: View {
     }
 
     @ViewBuilder private var captureControls: some View {
+        if vm.selectedDemo.isFullScreenAR {
+            // AR Measure replaces the photo→result flow entirely; one big button
+            // launches the ported ARMeasurementView in a full-screen cover.
+            Button {
+                showARMeasure = true
+            } label: {
+                Label("Start AR Measure", systemImage: "ruler.fill")
+                    .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(.borderedProminent)
+            .controlSize(.large)
+        } else {
         // Per-detection question (e.g. a PPE check for the crowd demo). Empty = the
         // recipe's default prompt. Only demos that take a question show this field.
         // In Japanese mode the question is typed in Japanese; its English translation
@@ -306,13 +592,29 @@ struct ContentView: View {
         }
         HStack {
             if UIImagePickerController.isSourceTypeAvailable(.camera) {
-                Button { picker = .camera } label: {
-                    Label("Camera", systemImage: "camera").frame(maxWidth: .infinity)
+                // Document QA, Receipt, Business Card, and ID all work off printed
+                // pages, so they get Apple's document scanner (live edge detection,
+                // auto-shutter, perspective correction) in place of the raw camera.
+                // Other demos keep the standard camera roll picker.
+                let usesScanner = vm.selectedDemo.usesDocumentScanner
+                Button { picker = usesScanner ? .scanner : .camera } label: {
+                    Label(
+                        usesScanner ? "Scan" : "Camera",
+                        systemImage: usesScanner ? "doc.viewfinder" : "camera"
+                    )
+                    .frame(maxWidth: .infinity)
                 }
                 .buttonStyle(.bordered)
             }
-            Button { picker = .library } label: {
-                Label("Photos", systemImage: "photo").frame(maxWidth: .infinity)
+            // Listing wants multiple angle photos of one item, so it gets the
+            // PHPicker (multi-select) in place of the single-image library picker.
+            let multiPhoto = vm.selectedDemo.id == Demo.listing.id
+            Button { picker = multiPhoto ? .multiPhoto : .library } label: {
+                Label(
+                    multiPhoto ? "Photos (up to 5)" : "Photos",
+                    systemImage: multiPhoto ? "photo.stack" : "photo"
+                )
+                .frame(maxWidth: .infinity)
             }
             .buttonStyle(.bordered)
         }
@@ -337,12 +639,15 @@ struct ContentView: View {
             }
             .buttonStyle(.borderedProminent)
         }
+        }   // end of `else` for isFullScreenAR
     }
 
     // MARK: - Run (with input translation when in Japanese).
 
     private enum PendingRun {
-        case newImage(UIImage)
+        /// Newly-captured pages (one element for camera/library, many for a multi-page
+        /// scan). Caller is responsible for wrapping a single UIImage as `[image]`.
+        case newImage([UIImage])
         case current
     }
 
@@ -359,8 +664,8 @@ struct ContentView: View {
 
     private func performRun(_ pending: PendingRun, query text: String) {
         switch pending {
-        case .newImage(let image):
-            Task { await vm.analyze(image, detail: detail, query: text) }
+        case .newImage(let pages):
+            Task { await vm.analyze(pages, detail: detail, query: text) }
         case .current:
             Task { await vm.analyzeCurrent(detail: detail, query: text) }
         }
@@ -480,9 +785,18 @@ struct ContentView: View {
     }
 
     enum PickerKind: Identifiable {
-        case camera, library
+        case camera, library, scanner, multiPhoto
         var id: Int { hashValue }
-        var source: UIImagePickerController.SourceType { self == .camera ? .camera : .photoLibrary }
+        /// Source for `UIImagePickerController`. `nil` for the document scanner
+        /// (`VNDocumentCameraViewController`) and the multi-photo picker
+        /// (`PHPickerViewController`), which have their own presenters.
+        var imagePickerSource: UIImagePickerController.SourceType? {
+            switch self {
+            case .camera: .camera
+            case .library: .photoLibrary
+            case .scanner, .multiPhoto: nil
+            }
+        }
     }
 }
 
@@ -676,6 +990,156 @@ private enum Typewriter {
     }
 }
 
+// MARK: - Document HUD overlay (sci-fi style label-on-image for document demos).
+//
+// For document-type demos (Document QA, Receipt, Business Card, ID), every
+// detected field is shown on the photo as: a corner-bracket box, a dashed
+// connector, and a small label panel above (or below) it that types its value
+// out. Labels animate in with a small stagger when a result lands.
+
+private struct DocumentHUDOverlay: View {
+    let imageSize: CGSize
+    let detections: [Detection]
+    let selectedKey: String?
+    let onTap: (String?) -> Void
+
+    var body: some View {
+        GeometryReader { geo in
+            let fitted = SpotlightOverlay.fittedRect(imageSize: imageSize, in: geo.size)
+            ZStack {
+                // Background tap clears the selection (boxes still highlight).
+                Color.black.opacity(0.001)
+                    .contentShape(Rectangle())
+                    .onTapGesture { onTap(nil) }
+
+                ForEach(Array(detections.enumerated()), id: \.element.id) { index, detection in
+                    let rect = SpotlightOverlay.viewRect(detection.box, in: fitted)
+                    HUDFieldOverlay(
+                        rect: rect,
+                        containerSize: geo.size,
+                        detection: detection,
+                        isSelected: selectedKey == detection.key,
+                        appearDelay: 0.06 * Double(index)
+                    )
+                    .onTapGesture { onTap(detection.key) }
+                }
+            }
+        }
+    }
+}
+
+/// One field's HUD: corner brackets + a dashed connector + a label panel.
+private struct HUDFieldOverlay: View {
+    let rect: CGRect
+    let containerSize: CGSize
+    let detection: Detection
+    let isSelected: Bool
+    let appearDelay: Double
+    @State private var visible = false
+
+    static let panelWidth: CGFloat = 168
+    private static let panelEstHeight: CGFloat = 38
+    private static let gap: CGFloat = 6
+
+    var body: some View {
+        // Place the panel above the box if there's room, else below. Center it
+        // on the box midX, clamped to the container width.
+        let preferAbove = rect.minY - Self.panelEstHeight - Self.gap >= 4
+        let panelMidY = preferAbove
+            ? rect.minY - Self.gap - Self.panelEstHeight / 2
+            : rect.maxY + Self.gap + Self.panelEstHeight / 2
+        let panelMidX = min(max(Self.panelWidth / 2 + 4, rect.midX), containerSize.width - Self.panelWidth / 2 - 4)
+        let connectorStart = CGPoint(x: rect.midX, y: preferAbove ? rect.minY : rect.maxY)
+        let connectorEnd = CGPoint(x: panelMidX, y: preferAbove ? panelMidY + Self.panelEstHeight / 2 : panelMidY - Self.panelEstHeight / 2)
+
+        let neon: Color = isSelected ? .cyan : Color.cyan.opacity(0.78)
+
+        ZStack {
+            CornerBrackets()
+                .stroke(neon, lineWidth: isSelected ? 2 : 1.2)
+                .frame(width: rect.width, height: rect.height)
+                .position(x: rect.midX, y: rect.midY)
+                .shadow(color: Color.cyan.opacity(isSelected ? 0.85 : 0.35), radius: isSelected ? 6 : 3)
+
+            Path { path in
+                path.move(to: connectorStart)
+                path.addLine(to: connectorEnd)
+            }
+            .stroke(neon, style: StrokeStyle(lineWidth: 0.8, dash: [2, 2]))
+
+            HUDLabelPanel(detection: detection, isSelected: isSelected)
+                .frame(width: Self.panelWidth)
+                .position(x: panelMidX, y: panelMidY)
+        }
+        .opacity(visible ? 1 : 0)
+        .scaleEffect(visible ? 1 : 0.94, anchor: .top)
+        .animation(.easeInOut(duration: 0.18), value: isSelected)
+        .task(id: detection.id) {
+            visible = false
+            try? await Task.sleep(for: .seconds(appearDelay))
+            withAnimation(.spring(response: 0.42, dampingFraction: 0.78)) {
+                visible = true
+            }
+        }
+    }
+}
+
+/// Compact two-line label: uppercase mono key, mono value typed out.
+private struct HUDLabelPanel: View {
+    let detection: Detection
+    let isSelected: Bool
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 1) {
+            Text(detection.label.uppercased())
+                .font(.system(size: 9, weight: .bold, design: .monospaced))
+                .foregroundStyle(.cyan)
+                .tracking(0.8)
+                .lineLimit(1)
+                .truncationMode(.tail)
+            if let detail = detection.detail, !detail.isEmpty {
+                TypewriterText(text: detail)
+                    .font(.system(size: 11, weight: .medium, design: .monospaced))
+                    .foregroundStyle(.white)
+                    .lineLimit(2)
+            }
+        }
+        .padding(.horizontal, 8).padding(.vertical, 4)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(.black.opacity(0.78), in: RoundedRectangle(cornerRadius: 3))
+        .overlay(
+            RoundedRectangle(cornerRadius: 3)
+                .stroke(isSelected ? Color.cyan : Color.cyan.opacity(0.55), lineWidth: isSelected ? 1 : 0.6)
+        )
+        .shadow(color: Color.cyan.opacity(isSelected ? 0.55 : 0.18), radius: isSelected ? 5 : 2)
+    }
+}
+
+/// Sci-fi corner brackets in place of a full rectangle border.
+private struct CornerBrackets: Shape {
+    func path(in rect: CGRect) -> Path {
+        var path = Path()
+        let len = min(14, rect.width * 0.28, rect.height * 0.28)
+        // top-left
+        path.move(to: CGPoint(x: rect.minX, y: rect.minY + len))
+        path.addLine(to: CGPoint(x: rect.minX, y: rect.minY))
+        path.addLine(to: CGPoint(x: rect.minX + len, y: rect.minY))
+        // top-right
+        path.move(to: CGPoint(x: rect.maxX - len, y: rect.minY))
+        path.addLine(to: CGPoint(x: rect.maxX, y: rect.minY))
+        path.addLine(to: CGPoint(x: rect.maxX, y: rect.minY + len))
+        // bottom-right
+        path.move(to: CGPoint(x: rect.maxX, y: rect.maxY - len))
+        path.addLine(to: CGPoint(x: rect.maxX, y: rect.maxY))
+        path.addLine(to: CGPoint(x: rect.maxX - len, y: rect.maxY))
+        // bottom-left
+        path.move(to: CGPoint(x: rect.minX + len, y: rect.maxY))
+        path.addLine(to: CGPoint(x: rect.minX, y: rect.maxY))
+        path.addLine(to: CGPoint(x: rect.minX, y: rect.maxY - len))
+        return path
+    }
+}
+
 /// Renders a `DemoResult`: a big headline, then per-row entries. Tapping a row
 /// spotlights its box(es) on the photo (two-way with the overlay).
 private struct ResultView: View {
@@ -807,5 +1271,722 @@ private struct ResultView: View {
             if detection.key == key { return range }
         }
         return nil
+    }
+}
+
+// MARK: - Receipt card
+
+/// Bespoke receipt-style display for the Receipt demo: merchant + date header,
+/// big currency-aware total, optional subtotal/tax/category/payment chips, a
+/// scrollable line-item list, and Copy-CSV / Share-CSV buttons. Reads
+/// `ReceiptData` directly (not the generic `DemoResult`), so anything the model
+/// couldn't read is simply omitted instead of rendering as "—".
+private struct ReceiptCard: View {
+    let data: ReceiptData
+    /// Temp file the Share button vends. Regenerated on `data` change so the
+    /// share sheet always hands off the current scan, not a stale one.
+    @State private var csvFile: URL?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            header
+            total
+            chipsRow
+            Divider()
+            itemsList
+            exportButtons
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .onAppear { regenerateCSVFile() }
+        .onChange(of: data) { regenerateCSVFile() }
+    }
+
+    @ViewBuilder private var header: some View {
+        HStack(alignment: .firstTextBaseline) {
+            Text(data.merchant ?? "Unknown merchant")
+                .font(.headline)
+                .lineLimit(2)
+            Spacer()
+            if let date = data.date {
+                Text(date).font(.subheadline).foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    @ViewBuilder private var total: some View {
+        if let total = data.total {
+            HStack(alignment: .firstTextBaseline, spacing: 6) {
+                if let currency = data.currency {
+                    Text(currency).font(.callout).foregroundStyle(.secondary)
+                }
+                Text(formatAmount(total))
+                    .font(.system(size: 36, weight: .bold))
+                    .monospacedDigit()
+                Spacer()
+                if data.subtotal != nil || data.tax != nil {
+                    VStack(alignment: .trailing, spacing: 2) {
+                        if let sub = data.subtotal {
+                            Text("Subtotal \(formatAmount(sub))")
+                                .font(.caption2).foregroundStyle(.secondary)
+                        }
+                        if let tax = data.tax {
+                            Text("Tax \(formatAmount(tax))")
+                                .font(.caption2).foregroundStyle(.secondary)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    @ViewBuilder private var chipsRow: some View {
+        let hasContent = data.category != nil || data.paymentMethod != nil
+        if hasContent {
+            HStack(spacing: 8) {
+                if let category = data.category {
+                    Text(category)
+                        .font(.caption).bold()
+                        .padding(.horizontal, 8).padding(.vertical, 3)
+                        .background(.blue.opacity(0.15), in: Capsule())
+                }
+                if let payment = data.paymentMethod {
+                    Label(payment, systemImage: "creditcard")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+            }
+        }
+    }
+
+    @ViewBuilder private var itemsList: some View {
+        if data.items.isEmpty {
+            Text("No line items extracted.")
+                .font(.callout).foregroundStyle(.secondary)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        } else {
+            ScrollView {
+                VStack(spacing: 0) {
+                    ForEach(Array(data.items.enumerated()), id: \.offset) { _, item in
+                        HStack(alignment: .firstTextBaseline) {
+                            Text(item.name).font(.callout).lineLimit(2)
+                            if let q = item.quantity {
+                                Text("×\(formatAmount(q))")
+                                    .font(.caption2).foregroundStyle(.secondary)
+                            }
+                            Spacer()
+                            if let amount = item.amount {
+                                Text(formatAmount(amount))
+                                    .font(.callout).monospacedDigit().foregroundStyle(.secondary)
+                            }
+                        }
+                        .padding(.vertical, 6)
+                        Divider()
+                    }
+                }
+            }
+        }
+    }
+
+    @ViewBuilder private var exportButtons: some View {
+        HStack {
+            Button {
+                // Copy just the row (no header) so users can append to an
+                // existing spreadsheet without duplicating column names.
+                UIPasteboard.general.string = Receipt.csvRow(data)
+            } label: {
+                Label("Copy CSV", systemImage: "doc.on.clipboard").frame(maxWidth: .infinity)
+            }
+            .buttonStyle(.bordered)
+            if let csvFile {
+                ShareLink(item: csvFile, preview: SharePreview(csvFile.lastPathComponent)) {
+                    Label("Share CSV", systemImage: "square.and.arrow.up")
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.bordered)
+            }
+        }
+    }
+
+    /// Write the full CSV (header + row) to a temp file so `ShareLink` has a
+    /// real .csv URL to hand off — receiving apps (Mail, Files, Numbers) detect
+    /// the type from the extension.
+    private func regenerateCSVFile() {
+        let safeMerchant = (data.merchant ?? "Receipt")
+            .components(separatedBy: CharacterSet.alphanumerics.inverted)
+            .filter { !$0.isEmpty }
+            .joined(separator: "-")
+        let filename = "\(safeMerchant.isEmpty ? "Receipt" : safeMerchant)-\(data.date ?? "scan").csv"
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent(filename)
+        do {
+            try Receipt.csv(data).write(to: url, atomically: true, encoding: .utf8)
+            csvFile = url
+        } catch {
+            csvFile = nil
+        }
+    }
+
+    /// Presentation-layer formatter for a Receipt amount: integer-valued doubles
+    /// without a decimal ("480"), fractional values with two decimals ("12.50"),
+    /// nil as empty string. Kept local because formatting is a view concern and
+    /// VLMKit's matching helper lives behind module visibility.
+    private func formatAmount(_ value: Double?) -> String {
+        guard let value else { return "" }
+        return value == value.rounded()
+            ? String(Int(value))
+            : String(format: "%.2f", value)
+    }
+}
+
+// MARK: - Business Card card
+
+/// Bespoke contact display for the Business Card demo. Reads `BusinessCardData`
+/// directly so missing fields are omitted rather than rendered as "—". The
+/// **Save to Contacts** button opens a `CNContactViewController` preview pre-
+/// populated from the extraction, so the user can review/edit each field before
+/// tapping Done (which writes to Apple Contacts). **Share vCard** vends the
+/// same data as a `.vcf` file via `ShareLink` for handoff to Mail / Messages /
+/// any third-party contact manager.
+private struct BusinessCardCard: View {
+    let data: BusinessCardData
+    @State private var showContactsPreview = false
+    @State private var vcardFile: URL?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            header
+            companyAndTitle
+            contactMethods
+            socialsRow
+            addressBlock
+            Spacer(minLength: 0)
+            exportButtons
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .onAppear { regenerateVCardFile() }
+        .onChange(of: data) { regenerateVCardFile() }
+        .sheet(isPresented: $showContactsPreview) {
+            ContactsPreviewView(data: data, onDismiss: { showContactsPreview = false })
+                .ignoresSafeArea()
+        }
+    }
+
+    @ViewBuilder private var header: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(data.displayName.isEmpty ? "Unknown name" : data.displayName)
+                .font(.title3).bold()
+                .lineLimit(2)
+            if let phonetic = data.phoneticName {
+                Text(phonetic).font(.caption).foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    @ViewBuilder private var companyAndTitle: some View {
+        let line = [data.title, [data.company, data.department].compactMap { $0 }.joined(separator: " / ").nilIfEmpty]
+            .compactMap { $0 }
+            .joined(separator: " · ")
+        if !line.isEmpty {
+            Text(line).font(.callout).foregroundStyle(.secondary)
+        }
+    }
+
+    @ViewBuilder private var contactMethods: some View {
+        if !data.phones.isEmpty || !data.emails.isEmpty || !data.urls.isEmpty {
+            VStack(alignment: .leading, spacing: 4) {
+                ForEach(Array(data.phones.enumerated()), id: \.offset) { _, phone in
+                    contactRow(icon: "phone", title: phone.number, badge: phone.kind)
+                }
+                ForEach(data.emails, id: \.self) { email in
+                    contactRow(icon: "envelope", title: email, badge: nil)
+                }
+                ForEach(data.urls, id: \.self) { url in
+                    contactRow(icon: "globe", title: url, badge: nil)
+                }
+            }
+        }
+    }
+
+    @ViewBuilder private var socialsRow: some View {
+        if !data.socials.isEmpty {
+            VStack(alignment: .leading, spacing: 4) {
+                ForEach(Array(data.socials.enumerated()), id: \.offset) { _, social in
+                    contactRow(icon: "person.crop.circle.badge.plus", title: social.handle, badge: social.platform)
+                }
+            }
+        }
+    }
+
+    @ViewBuilder private var addressBlock: some View {
+        if let address = data.address {
+            HStack(alignment: .top, spacing: 6) {
+                Image(systemName: "mappin.and.ellipse")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                Text(address)
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+    }
+
+    @ViewBuilder private func contactRow(icon: String, title: String, badge: String?) -> some View {
+        HStack(spacing: 6) {
+            Image(systemName: icon).font(.callout).foregroundStyle(.secondary)
+            Text(title).font(.callout).lineLimit(1).truncationMode(.middle)
+            Spacer()
+            if let badge {
+                Text(badge)
+                    .font(.caption2).bold()
+                    .padding(.horizontal, 6).padding(.vertical, 2)
+                    .background(.blue.opacity(0.12), in: Capsule())
+                    .foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    @ViewBuilder private var exportButtons: some View {
+        HStack {
+            Button {
+                showContactsPreview = true
+            } label: {
+                Label("Save to Contacts", systemImage: "person.crop.circle.badge.plus")
+                    .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(.borderedProminent)
+            if let vcardFile {
+                ShareLink(item: vcardFile, preview: SharePreview(vcardFile.lastPathComponent)) {
+                    Label("Share vCard", systemImage: "square.and.arrow.up")
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.bordered)
+            }
+        }
+    }
+
+    /// Write the vCard to a temp file so `ShareLink` hands off a real `.vcf`
+    /// URL — Mail, Files, and Contacts pick the type up from the extension.
+    private func regenerateVCardFile() {
+        let base = data.displayName
+            .components(separatedBy: CharacterSet.alphanumerics.inverted)
+            .filter { !$0.isEmpty }
+            .joined(separator: "-")
+        let filename = "\(base.isEmpty ? "Contact" : base).vcf"
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent(filename)
+        do {
+            try BusinessCard.vCard(data).write(to: url, atomically: true, encoding: .utf8)
+            vcardFile = url
+        } catch {
+            vcardFile = nil
+        }
+    }
+}
+
+private extension String {
+    /// Returns nil when the string is empty, otherwise self. Local helper kept
+    /// fileprivate to this view because it's only used to compose the optional
+    /// company/department line above.
+    var nilIfEmpty: String? { isEmpty ? nil : self }
+}
+
+// MARK: - ID Document card
+
+/// Bespoke ID-document display: privacy banner up top (loud — IDs are
+/// sensitive), face thumbnail from Vision, the typed KYC fields, and the
+/// optional MRZ block in monospace. Copy/Share JSON for downstream KYC
+/// pipelines; no "Save to Contacts" or vCard — IDs aren't business cards and
+/// the export surface stays minimal on purpose.
+private struct IDDocumentCard: View {
+    let data: IDDocumentData
+    let face: CGImage?
+    @State private var jsonFile: URL?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            privacyBanner
+            headerRow
+            primaryRow
+            datesRow
+            issuingAuthority
+            addressBlock
+            mrzBlock
+            additionalFieldsList
+            Spacer(minLength: 0)
+            exportButtons
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .onAppear { regenerateJSONFile() }
+        .onChange(of: data) { regenerateJSONFile() }
+    }
+
+    @ViewBuilder private var privacyBanner: some View {
+        HStack(spacing: 6) {
+            Image(systemName: "lock.shield.fill").foregroundStyle(.green)
+            Text("On-device. No data leaves your phone.")
+                .font(.caption2).bold()
+                .foregroundStyle(.secondary)
+        }
+        .padding(.horizontal, 8).padding(.vertical, 4)
+        .background(.green.opacity(0.10), in: Capsule())
+    }
+
+    @ViewBuilder private var headerRow: some View {
+        HStack(alignment: .top, spacing: 12) {
+            facePlaceholder
+            VStack(alignment: .leading, spacing: 4) {
+                if let type = data.documentType {
+                    Text(type)
+                        .font(.caption).bold()
+                        .padding(.horizontal, 8).padding(.vertical, 3)
+                        .background(.blue.opacity(0.15), in: Capsule())
+                }
+                Text(data.displayName.isEmpty ? "Unknown holder" : data.displayName)
+                    .font(.title3).bold()
+                    .lineLimit(2)
+                if let number = data.documentNumber {
+                    Text(number)
+                        .font(.callout).monospaced()
+                        .foregroundStyle(.secondary)
+                }
+            }
+        }
+    }
+
+    @ViewBuilder private var facePlaceholder: some View {
+        let side: CGFloat = 88
+        Group {
+            if let face {
+                Image(decorative: face, scale: 1, orientation: .up)
+                    .resizable()
+                    .interpolation(.medium)
+                    .scaledToFill()
+            } else {
+                Image(systemName: "person.crop.rectangle")
+                    .font(.system(size: 36))
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .background(Color(.secondarySystemBackground))
+            }
+        }
+        .frame(width: side, height: side)
+        .clipShape(RoundedRectangle(cornerRadius: 8))
+    }
+
+    @ViewBuilder private var primaryRow: some View {
+        let parts: [(String, String)] = [
+            ("Date of birth", data.dateOfBirth),
+            ("Sex", data.sex),
+            ("Nationality", data.nationality),
+        ].compactMap { label, value in
+            value.map { (label, $0) }
+        }
+        if !parts.isEmpty {
+            HStack(spacing: 12) {
+                ForEach(Array(parts.enumerated()), id: \.offset) { _, pair in
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text(pair.0).font(.caption2).foregroundStyle(.secondary)
+                        Text(pair.1).font(.callout).monospacedDigit()
+                    }
+                }
+            }
+        }
+    }
+
+    @ViewBuilder private var datesRow: some View {
+        let issue = data.issueDate.map { ("Issued", $0) }
+        let expiry = data.expiryDate.map { ("Expires", $0) }
+        let entries = [issue, expiry].compactMap { $0 }
+        if !entries.isEmpty {
+            HStack(spacing: 12) {
+                ForEach(Array(entries.enumerated()), id: \.offset) { _, pair in
+                    Label("\(pair.0) \(pair.1)", systemImage: "calendar")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+        }
+    }
+
+    @ViewBuilder private var issuingAuthority: some View {
+        if let authority = data.issuingAuthority {
+            HStack(spacing: 6) {
+                Image(systemName: "building.columns").font(.caption).foregroundStyle(.secondary)
+                Text(authority).font(.caption).foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    @ViewBuilder private var addressBlock: some View {
+        if let address = data.address {
+            HStack(alignment: .top, spacing: 6) {
+                Image(systemName: "mappin.and.ellipse").font(.callout).foregroundStyle(.secondary)
+                Text(address).font(.callout).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+    }
+
+    @ViewBuilder private var mrzBlock: some View {
+        if let mrz = data.mrz {
+            VStack(alignment: .leading, spacing: 3) {
+                Text("MRZ").font(.caption2).bold().foregroundStyle(.secondary)
+                Text(mrz)
+                    .font(.system(.caption2, design: .monospaced))
+                    .padding(8)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 6))
+            }
+        }
+    }
+
+    @ViewBuilder private var additionalFieldsList: some View {
+        if !data.additionalFields.isEmpty {
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Additional").font(.caption2).bold().foregroundStyle(.secondary)
+                ForEach(Array(data.additionalFields.enumerated()), id: \.offset) { _, field in
+                    HStack(alignment: .firstTextBaseline) {
+                        Text(field.label).font(.caption).foregroundStyle(.secondary)
+                        Spacer()
+                        Text(field.value).font(.caption).monospacedDigit()
+                    }
+                }
+            }
+        }
+    }
+
+    @ViewBuilder private var exportButtons: some View {
+        HStack {
+            Button {
+                if let json = try? IDDocument.json(data) {
+                    UIPasteboard.general.string = json
+                }
+            } label: {
+                Label("Copy JSON", systemImage: "doc.on.clipboard").frame(maxWidth: .infinity)
+            }
+            .buttonStyle(.bordered)
+            if let jsonFile {
+                ShareLink(item: jsonFile, preview: SharePreview(jsonFile.lastPathComponent)) {
+                    Label("Share JSON", systemImage: "square.and.arrow.up")
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.bordered)
+            }
+        }
+    }
+
+    /// Write the JSON to a temp `.json` file so `ShareLink` hands off a real
+    /// URL. The filename embeds the document number or display name so the
+    /// shared file has a meaningful name (`Passport-X1234567.json` rather than
+    /// a UUID).
+    private func regenerateJSONFile() {
+        let base = (data.documentNumber ?? data.displayName)
+            .components(separatedBy: CharacterSet.alphanumerics.inverted)
+            .filter { !$0.isEmpty }
+            .joined(separator: "-")
+        let prefix = data.documentType?
+            .components(separatedBy: CharacterSet.alphanumerics.inverted)
+            .filter { !$0.isEmpty }
+            .joined(separator: "-")
+            ?? "ID"
+        let filename = "\(prefix.isEmpty ? "ID" : prefix)-\(base.isEmpty ? "scan" : base).json"
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent(filename)
+        do {
+            let json = try IDDocument.json(data)
+            try json.write(to: url, atomically: true, encoding: .utf8)
+            jsonFile = url
+        } catch {
+            jsonFile = nil
+        }
+    }
+}
+
+// MARK: - Listing card (multi-turn refinement)
+
+/// Bespoke display for the Listing demo. Renders the generated draft (title,
+/// description, features, condition / suggested price chips, tags, alt-text)
+/// plus a **Refine** TextField at the bottom that fires a follow-up VLM pass
+/// keeping the previous draft as context. **Copy text** flattens the draft to
+/// a Mercari-ish "title + description + features" block; **Copy JSON** hands
+/// off the structured form for a downstream Shortcut / API.
+private struct ListingCard: View {
+    let data: ListingData
+    let isRefining: Bool
+    let hasHeroImage: Bool
+    let onRefine: (String) -> Void
+    let onGenerateBackground: () -> Void
+    let onClearHero: () -> Void
+    @State private var instruction = ""
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            titleBlock
+            descriptionBlock
+            featuresList
+            metaRow
+            tagsRow
+            altText
+            Spacer(minLength: 0)
+            backgroundBar
+            refineField
+            exportButtons
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+    }
+
+    @ViewBuilder private var backgroundBar: some View {
+        HStack(spacing: 8) {
+            Button(action: onGenerateBackground) {
+                Label(
+                    hasHeroImage ? "Regenerate background" : "Generate background",
+                    systemImage: "wand.and.stars"
+                )
+                .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(.bordered)
+            if hasHeroImage {
+                Button(action: onClearHero) {
+                    Image(systemName: "arrow.uturn.backward")
+                }
+                .buttonStyle(.bordered)
+                .help("Revert to the original photo")
+            }
+        }
+    }
+
+    @ViewBuilder private var titleBlock: some View {
+        if let title = data.title {
+            Text(title).font(.title3).bold().lineLimit(2)
+        } else {
+            Text("(no title)").font(.title3).bold().foregroundStyle(.secondary)
+        }
+    }
+
+    @ViewBuilder private var descriptionBlock: some View {
+        if let description = data.description {
+            Text(description)
+                .font(.callout)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    @ViewBuilder private var featuresList: some View {
+        if !data.features.isEmpty {
+            VStack(alignment: .leading, spacing: 3) {
+                ForEach(Array(data.features.enumerated()), id: \.offset) { _, feature in
+                    HStack(alignment: .top, spacing: 6) {
+                        Text("•").foregroundStyle(.secondary)
+                        Text(feature).font(.callout)
+                    }
+                }
+            }
+        }
+    }
+
+    @ViewBuilder private var metaRow: some View {
+        let hasContent = data.condition != nil || data.suggestedPriceRange != nil
+        if hasContent {
+            HStack(spacing: 8) {
+                if let condition = data.condition {
+                    Text(condition)
+                        .font(.caption).bold()
+                        .padding(.horizontal, 8).padding(.vertical, 3)
+                        .background(.blue.opacity(0.15), in: Capsule())
+                }
+                if let price = data.suggestedPriceRange {
+                    Label(price, systemImage: "tag")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+            }
+        }
+    }
+
+    @ViewBuilder private var tagsRow: some View {
+        if !data.tags.isEmpty {
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 6) {
+                    ForEach(data.tags, id: \.self) { tag in
+                        Text("#\(tag)")
+                            .font(.caption2)
+                            .padding(.horizontal, 6).padding(.vertical, 2)
+                            .background(Color(.secondarySystemBackground), in: Capsule())
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            }
+        }
+    }
+
+    @ViewBuilder private var altText: some View {
+        if let alt = data.altText {
+            HStack(alignment: .top, spacing: 4) {
+                Image(systemName: "text.alignleft").font(.caption2).foregroundStyle(.secondary)
+                Text(alt).font(.caption2).foregroundStyle(.secondary).italic()
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+    }
+
+    @ViewBuilder private var refineField: some View {
+        HStack(spacing: 6) {
+            TextField("Refine: \"more casual\", \"translate to English\"…", text: $instruction)
+                .textFieldStyle(.roundedBorder)
+                .submitLabel(.send)
+                .onSubmit(submitRefine)
+                .disabled(isRefining)
+            if isRefining {
+                ProgressView().padding(.horizontal, 4)
+            } else {
+                Button(action: submitRefine) {
+                    Image(systemName: "arrow.up.circle.fill").font(.title2)
+                }
+                .disabled(instruction.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            }
+        }
+    }
+
+    @ViewBuilder private var exportButtons: some View {
+        HStack {
+            Button {
+                UIPasteboard.general.string = flattenedText(for: data)
+            } label: {
+                Label("Copy text", systemImage: "doc.on.clipboard").frame(maxWidth: .infinity)
+            }
+            .buttonStyle(.bordered)
+            Button {
+                if let json = try? Listing.json(data) {
+                    UIPasteboard.general.string = json
+                }
+            } label: {
+                Label("Copy JSON", systemImage: "curlybraces").frame(maxWidth: .infinity)
+            }
+            .buttonStyle(.bordered)
+        }
+    }
+
+    private func submitRefine() {
+        let trimmed = instruction.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        onRefine(trimmed)
+        instruction = ""
+    }
+
+    /// Marketplace-ready "paste this into the listing UI" block. Title on one
+    /// line, blank, description, blank, bullet features, blank, "Condition: X
+    /// — Price: Y". Plain text so Mercari / eBay / Yahoo Auctions accept it.
+    private func flattenedText(for data: ListingData) -> String {
+        var blocks: [String] = []
+        if let title = data.title { blocks.append(title) }
+        if let description = data.description { blocks.append(description) }
+        if !data.features.isEmpty {
+            blocks.append(data.features.map { "• \($0)" }.joined(separator: "\n"))
+        }
+        var meta: [String] = []
+        if let condition = data.condition { meta.append("Condition: \(condition)") }
+        if let price = data.suggestedPriceRange { meta.append("Price: \(price)") }
+        if !meta.isEmpty { blocks.append(meta.joined(separator: " — ")) }
+        if !data.tags.isEmpty {
+            blocks.append(data.tags.map { "#\($0)" }.joined(separator: " "))
+        }
+        return blocks.joined(separator: "\n\n")
     }
 }

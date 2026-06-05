@@ -1,15 +1,22 @@
 import CoreGraphics
 import Foundation
-import SAMKit
 
 /// Turns a tap (or center) point into a region of interest using on-device MobileSAM.
 ///
 /// VLMKit stays SAM-agnostic — this provider lives in the app, owning the SAMKit
 /// dependency and the bundled `.mlpackage` models. Give it the captured image once
 /// (`setImage`), then ask for the region at any image point (`roi(atImagePoint:)`); it
-/// returns a tight, image-normalized (0...1, top-left) bounding box, ready to crop the
-/// high-res detail from and to draw on the photo. The heavy Core ML work runs off the
-/// main thread so taps stay responsive.
+/// returns a tight, image-normalized (0...1, top-left) bounding box.
+///
+/// The SAMKit dependency is **optional** — if the package isn't in the build
+/// (the ROI Zoom demo is hidden from the menu), the type falls back to a stub that
+/// reports `loadFailed = true` so callers degrade gracefully and the rest of the
+/// app still compiles. Re-add `SAMKit` to `project.yml` to restore real
+/// segmentation when ROI Zoom comes back to the menu.
+
+#if canImport(SAMKit)
+import SAMKit
+
 @MainActor
 final class SAMROIProvider: ObservableObject {
     /// True once MobileSAM has loaded and can segment.
@@ -100,3 +107,21 @@ final class SAMROIProvider: ObservableObject {
         return box.intersection(CGRect(x: 0, y: 0, width: 1, height: 1))
     }
 }
+
+#else
+
+/// Stub used when the SAMKit package isn't in the build. Same public API as the
+/// real provider so `DemoViewModel`/`ContentView` compile unchanged; segmentation
+/// just always reports "not available" and the ROI demo (hidden from the menu)
+/// can't actually run. Re-add the SAMKit dependency to switch back to the real one.
+@MainActor
+final class SAMROIProvider: ObservableObject {
+    @Published private(set) var isReady = false
+    @Published private(set) var loadFailed = true
+
+    func loadIfNeeded() async { loadFailed = true }
+    func setImage(_ cgImage: CGImage) async { /* no-op */ }
+    func roi(atImagePoint point: CGPoint) async -> CGRect? { nil }
+}
+
+#endif

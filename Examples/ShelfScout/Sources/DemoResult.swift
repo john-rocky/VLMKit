@@ -37,20 +37,24 @@ struct AggregateRow: Identifiable, Sendable {
 
 /// One located thing on the photo. `key` links back to its row(s); `label` is the
 /// callout shown when it is highlighted. `box` is image-normalized, top-left origin.
+/// `page` is the 0-indexed page (multi-page Document QA only); nil means the
+/// detection has no page concept and is shown regardless of the current page.
 struct Detection: Identifiable, Sendable {
     let id: UUID
     let key: String
     let label: String           // short title shown in the callout
     let detail: String?         // longer body streamed into the callout (α2: the description)
     let box: CGRect
+    let page: Int?
 
     // Explicit id so translation can rebuild a detection with the SAME identity
     // (a fresh UUID each render would restart the typewriter / break ForEach).
-    init(id: UUID = UUID(), key: String, label: String, detail: String?, box: CGRect) {
+    init(id: UUID = UUID(), key: String, label: String, detail: String?, box: CGRect, page: Int? = nil) {
         self.id = id
         self.key = key
         self.label = label
         self.detail = detail
         self.box = box
+        self.page = page
     }
 }
