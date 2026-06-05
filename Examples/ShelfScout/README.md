@@ -121,6 +121,42 @@ The folder must be named `Model` and hold the full repo snapshot (`config.json`,
 `*.safetensors`, and the tokenizer files). Delete it to return to the download
 path. File sharing is enabled via `UIFileSharingEnabled` in `project.yml`.
 
+## Pexels API key (optional, Listing → Background Studio)
+
+The Listing demo's Background Studio offers three background sources: a
+programmatic Solid/Gradient renderer (always on), Pexels stock photos, and
+on-device Diffusion (see next section). The Pexels tab is hidden unless you've
+added your key:
+
+1. Sign up at [pexels.com/api](https://www.pexels.com/api/) (free, 200 req/h).
+2. Open `Examples/ShelfScout/Sources/Backgrounds/PexelsAPIKey.swift` and set
+   `static let key = "your-key-here"`.
+3. Rebuild — the Pexels tab now appears in the Background Studio.
+
+`PexelsAPIKey.swift` is gitignored, so your key stays local.
+
+## HyperSD models (Listing → Background Studio → AI Diffusion)
+
+The Background Studio's **AI Diffusion** mode generates a fresh background
+fully on-device using HyperSD (1-step distilled Stable Diffusion 1.5, ~947 MB
+in 6-bit palettized Core ML). iPhone 15+ (≥ 6 GB RAM) is required.
+
+No setup — the four `.mlpackage` zips are fetched from the
+[`john-rocky/CoreML-Models` `hypersd-v1` release](https://github.com/john-rocky/CoreML-Models/releases/tag/hypersd-v1)
+the first time the user picks the **AI Diffusion** tab, extracted into
+`Documents/HyperSDModels/`, and reused on every subsequent run. Progress
+bar in the sheet shows which asset (1 of 4) and overall percent. The BPE
+tokenizer (`vocab.json` + `merges.txt`) is bundled in the app at build
+time because it's tiny and stable across SD 1.5 builds.
+
+The pipeline drives Apple's `apple/ml-stable-diffusion` text encoder and VAE
+decoder, plus a hand-rolled 1-step TCD scheduler and a thin Unet driver — see
+`Sources/Backgrounds/HyperSD/`.
+
+When the user picks AI Diffusion in the studio, the VLM is unloaded so the
+~2 GB of HyperSD weights have room to run; the next VLM call after the sheet
+closes pays a cold-load (~30 s).
+
 ## Manual setup (without XcodeGen)
 
 1. Create a new iOS App (SwiftUI, iOS 17) in Xcode.

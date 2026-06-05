@@ -31,6 +31,11 @@ PROJECT_BRIEF.md
 HANDOFF.md
 NEXT_TASK_ROI_ZOOM.md
 NEXT_TASK_DESCRIBE_AND_POINT.md
+NEXT_TASK_MEASUREMENTS.md
+NEXT_TASK_DIFFUSION_BACKGROUND.md
 # Local article/draft (not part of the library repo)
 crowd-demo-article.md
 describe-and-point-article.md
+
+# Pexels API key — user must fill PexelsAPIKey.swift locally; never commit it
+Examples/ShelfScout/Sources/Backgrounds/PexelsAPIKey.swift

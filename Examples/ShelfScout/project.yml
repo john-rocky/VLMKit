@@ -8,12 +8,20 @@ options:
 packages:
   VLMKit:
     path: ../..
-  # MobileSAM segmentation (owner's package). The ROI Zoom demo turns a tap/center
-  # point into a region with it. The .mlpackage models are bundled via Sources/Models
-  # (gitignored — download MobileSAM.zip from the SamKit releases; see README).
-  SAMKit:
-    url: https://github.com/john-rocky/SamKit.git
-    from: 1.0.0
+  # apple/ml-stable-diffusion supplies the CoreML wrappers for the HyperSD
+  # text encoder, decoder, and BPE tokenizer used by the Background Studio's
+  # Diffusion mode. The Unet wrapper's `predictNoise` is internal, so the
+  # Diffusion pipeline drives the chunked Unet `.mlpackage`s directly with
+  # CoreML — see `Backgrounds/HyperSD/MiniUnet.swift`.
+  StableDiffusion:
+    url: https://github.com/apple/ml-stable-diffusion
+    from: 1.1.0
+  # ZIPFoundation extracts the 4 HyperSD release zips into
+  # `Documents/HyperSDModels/` on first use of the Diffusion mode. iOS has no
+  # built-in zip extractor; this is the standard SPM choice.
+  ZIPFoundation:
+    url: https://github.com/weichsel/ZIPFoundation
+    from: 0.9.19
 
 targets:
   ShelfScout:
@@ -24,8 +32,13 @@ targets:
     dependencies:
       - package: VLMKit
         product: VLMKit
-      - package: SAMKit
-        product: SAMKit
+      # SAMKit (MobileSAM) is intentionally omitted — ROI Zoom is hidden from
+      # the menu and SAMROIProvider uses `#if canImport(SAMKit)` so the build
+      # works without it. Re-add this block to bring ROI Zoom back to the menu.
+      - package: StableDiffusion
+        product: StableDiffusion
+      - package: ZIPFoundation
+        product: ZIPFoundation
     settings:
       base:
         GENERATE_INFOPLIST_FILE: YES
@@ -41,6 +54,9 @@ targets:
         # On-device only; these usage strings are required for the image picker.
         INFOPLIST_KEY_NSCameraUsageDescription: "VLMKit analyzes what the camera sees, fully on-device."
         INFOPLIST_KEY_NSPhotoLibraryUsageDescription: "VLMKit analyzes a photo you choose, fully on-device."
+        # Required for the Business Card demo's "Save to Contacts" flow — the
+        # CNContactViewController preview writes to Contacts when the user taps Done.
+        INFOPLIST_KEY_NSContactsUsageDescription: "VLMKit saves a business card you scan into Apple Contacts when you confirm."
         # Expose the app's Documents folder in Finder/Files so a model can be
         # sideloaded via USB (see README) instead of downloaded on every install.
         INFOPLIST_KEY_UIFileSharingEnabled: YES
