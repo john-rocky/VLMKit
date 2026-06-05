@@ -95,6 +95,8 @@ observation — the value's own box wins over a long line that happens to mentio
 
 ### Describe & Point
 
+<img src="https://github.com/user-attachments/assets/b7e18fe1-bbf2-4cd2-8f64-542e2279cc8d" width="280" alt="Describe & Point demo" />
+
 The VLM writes a short caption of the image and names the concrete objects it
 mentions; a separate on-device detector boxes each named object in caption
 order. The split is deliberate: VLMs hallucinate coordinates, but they
@@ -118,6 +120,8 @@ detector. Objects are ordered by their position in the caption text, and
 ones whose `phrase` cannot be located verbatim are dropped.
 
 ### Crowd Analytics
+
+<img src="https://github.com/user-attachments/assets/2f985602-ed5f-438e-af36-e565d3be3e7f" width="280" alt="Crowd Analytics demo" />
 
 Apple's Vision detects every person in the image; the VLM answers a question
 about each one. Counting people is a textbook VLM weak spot — Vision does
@@ -143,6 +147,8 @@ appear to be doing).
 
 ### Receipt
 
+<img src="https://github.com/user-attachments/assets/4e78c448-39f9-484a-ad28-5aa379180b59" width="280" alt="Receipt demo" />
+
 One typed call returns a fixed receipt schema you can sum, sort, and export.
 Every field is optional — `nil` is more honest than a hallucinated value.
 
@@ -167,6 +173,8 @@ which makes Receipt the building block for anyone shipping a personal-finance
 app outside that bucket.
 
 ### Business Card
+
+<img src="https://github.com/user-attachments/assets/96158444-1bb0-4427-a468-efe027dd8b21" width="280" alt="Business Card demo" />
 
 Read a card into a typed struct; the example app drops the result into a
 `CNContactViewController` preview so the user confirms before saving to Apple
@@ -286,6 +294,8 @@ bounding box (W / H / D / volume) of an object on the floor or table; the VLM
 labels what's inside the box. Two different primitives, one combined answer:
 "Wooden chair, 480 × 850 × 520 mm, 0.21 m³". Useful for moving estimates,
 fit-checks, and storage planning.
+
+<img src="https://github.com/user-attachments/assets/ad80bfb1-d45d-4402-82d7-bc03904b761c" width="280" alt="AR Measure demo" />
 
 Build with `xcodegen generate` from `Examples/VLMKitDemo/` (project.yml is
 included; the `.xcodeproj` is generated and gitignored).
