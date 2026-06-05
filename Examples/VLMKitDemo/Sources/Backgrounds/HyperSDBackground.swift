@@ -121,14 +121,19 @@ final class HyperSDBackground: BackgroundGenerator {
 
     // MARK: - Prompt shaping
 
-    /// Wrap the VLM's free-text style hint with a few words that nudge the
-    /// model toward product-photography backgrounds (no people, no text,
-    /// clean surfaces) without crowding the user's intent.
+    /// Wrap the VLM's scene description with diffusion-friendly modifiers:
+    /// quality cues so SD 1.5 renders sharp, composition cues so the center
+    /// stays empty (the subject will be composited there), and constraints so
+    /// the scene stays a pure backdrop (no people, text, or competing focal
+    /// point). HyperSD runs at guidance 1.0 so a negative prompt is ignored —
+    /// "no X" phrases live inside the positive prompt instead, which the
+    /// model does respect at 1-step.
     private static func buildPrompt(from style: String) -> String {
         let trimmed = style.trimmingCharacters(in: .whitespacesAndNewlines)
-        if trimmed.isEmpty {
-            return "clean studio backdrop, soft light, product photography"
-        }
-        return "\(trimmed), product photography backdrop, soft light, no text, no people"
+        let scene = trimmed.isEmpty ? "clean minimal studio backdrop, soft diffused light" : trimmed
+        return "\(scene), empty backdrop with negative space in the center, "
+            + "product photography backdrop, professional lighting, "
+            + "shallow depth of field, soft shadows, high detail, "
+            + "wide shot, no main subject, no people, no text, no logos"
     }
 }

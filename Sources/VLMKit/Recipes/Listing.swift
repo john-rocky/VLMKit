@@ -40,18 +40,26 @@ public struct ListingData: Sendable, Equatable {
     }
 }
 
-/// One VLM-proposed background style for a listing photo. `query` is the
-/// short free-text label / search query (e.g. "warm wood tabletop", "minimal
-/// white studio"); `color` is a palette token from the curated set
-/// ("warm beige", "cool gray", "deep navy", …) so the Solid-background mode
-/// can render without the VLM having to commit to RGB. Both come back as
-/// best-effort — the orchestrator can still fall back to defaults.
+/// One VLM-proposed background style for a listing photo.
+/// - `query` is the long, descriptive scene (8–14 words with lighting and
+///   material) tuned for diffusion generators that thrive on detail.
+/// - `keywords` is a short 2–4 word stock-photo search query tuned for
+///   keyword APIs like Pexels that prefer terse input. Nil means the
+///   orchestrator should fall back to `query`.
+/// - `color` is a palette token from the curated set ("warm beige",
+///   "cool gray", "deep navy", …) so the Solid-background mode can render
+///   without the VLM having to commit to RGB.
+///
+/// All three come back as best-effort — the orchestrator can still fall
+/// back to defaults.
 public struct BackgroundStyleSuggestion: Sendable, Equatable, Codable {
     public let query: String
+    public let keywords: String?
     public let color: String?
 
-    public init(query: String, color: String? = nil) {
+    public init(query: String, keywords: String? = nil, color: String? = nil) {
         self.query = query
+        self.keywords = keywords
         self.color = color
     }
 }
@@ -191,19 +199,35 @@ public enum Listing {
             instruction: """
             Look at the item shown across these photos. First identify what it \
             actually is — category, material, color, era, price tier, who the \
-            likely buyer is. Then propose \(count) distinct background scenes \
-            that suit THIS specific item in a marketplace hero shot. A vintage \
-            film camera, a yoga mat, a houseplant, and a luxury watch should \
-            each get backgrounds tailored to them — do not fall back on \
-            generic "studio / wood / cloth" defaults.
+            likely buyer is, what context a buyer would imagine using it in. \
+            Then propose \(count) distinct background scenes that suit THIS \
+            specific item in a marketplace hero shot.
+
+            Tailor to the item. A vintage film camera wants warm leather / aged \
+            wood / film-era desks. A yoga mat wants light studio floor / wellness \
+            interior / morning sunlight. A houseplant wants ceramic-on-shelf / \
+            terracotta / sunlit windowsill. A luxury watch wants dark stone / \
+            brushed metal / suede. Pick scenes that READ as "this item belongs \
+            here". Do not fall back on generic "studio / wood / cloth" defaults.
 
             For each background:
-            - "query": a short concrete phrase (≤6 words) naming the scene's \
-            surface, material, setting, or mood. Used as a stock-photo search \
-            query AND as a generation prompt, so be visually specific (e.g. \
-            include the material, lighting, or setting that fits this item). \
-            Avoid the bare word "studio" unless the item genuinely calls for \
-            a sterile backdrop.
+            - "query": a vivid, concrete scene description (8–14 words) naming \
+            the surface, material, setting, mood, AND lighting. This goes \
+            into an image-generation model that thrives on detail. Examples: \
+            "weathered oak workshop bench with afternoon window light, soft \
+            shadows", "smooth cream linen drape with diffused studio light", \
+            "polished dark marble countertop in a modern kitchen, soft top \
+            light". The scene must be EMPTY of any main subject — it is a \
+            backdrop the product will sit on top of, with room in the center \
+            for the product. Do not mention the product itself, people, \
+            faces, text, or logos.
+            - "keywords": the SAME scene as 2–4 short stock-photo search \
+            words (lowercase nouns/adjectives, comma- or space-separated). \
+            This is for a keyword search API (Pexels) that prefers terse \
+            input — long sentences return no matches. Examples for the three \
+            queries above: "oak workshop bench", "cream linen fabric", "dark \
+            marble countertop". No verbs, no lighting words, no commas \
+            inside a single keyword.
             - "color": one of \(knownBackgroundColors.joined(separator: ", ")) \
             — the dominant tone of that scene. Pick the closest. Use null \
             only when no tone fits.
@@ -215,7 +239,7 @@ public enum Listing {
             Output one JSON object in the shape specified.
             """,
             jsonHint: #"""
-            {"styles": [{"query": "string", "color": "string or null"}]}
+            {"styles": [{"query": "string", "keywords": "string or null", "color": "string or null"}]}
             """#,
             options: GenerationOptions(maxTokens: 512, temperature: 0.7)
         )
@@ -228,13 +252,16 @@ public enum Listing {
 
         struct SuggestionRaw: Codable, Sendable {
             let query: String?
+            let keywords: String?
             let color: String?
         }
     }
 
     /// Trim each suggestion, drop entries with no query, snap color to the
-    /// known palette when it matches, cap to `cap`. Internal so tests can
-    /// pin the shape later (skipped for now; this is a thin transform).
+    /// known palette when it matches, cap to `cap`. `keywords` is preserved
+    /// verbatim (only trimmed) — the consumer treats it as a search hint and
+    /// already falls back to `query` when nil. Internal so tests can pin the
+    /// shape later (skipped for now; this is a thin transform).
     static func cleanBackgroundSuggestions(
         _ raw: [BackgroundSuggestionsRaw.SuggestionRaw],
         cap: Int
@@ -244,13 +271,15 @@ public enum Listing {
             let query = (entry.query ?? "")
                 .trimmingCharacters(in: .whitespacesAndNewlines)
             guard !query.isEmpty else { continue }
+            let keywords = entry.keywords
+                .flatMap { $0.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty }
             let color = entry.color
                 .flatMap { $0.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty }
                 .flatMap { raw -> String? in
                     let lower = raw.lowercased()
                     return knownBackgroundColors.first { $0.lowercased() == lower }
                 }
-            out.append(BackgroundStyleSuggestion(query: query, color: color))
+            out.append(BackgroundStyleSuggestion(query: query, keywords: keywords, color: color))
             if out.count >= cap { break }
         }
         return out

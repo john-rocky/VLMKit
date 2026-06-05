@@ -12,13 +12,15 @@ struct BackgroundCompositor {
     /// Default output canvas. Mercari / eBay / Yahoo all accept square crops
     /// and many display them better than odd ratios.
     static let defaultCanvas = CGSize(width: 1024, height: 1024)
-    /// Subject occupies this fraction of the canvas's shorter side. Leaves
-    /// margin for shadow and breathing room — looks more "studio" than
-    /// edge-to-edge.
-    static let subjectFraction: CGFloat = 0.78
+    /// Subject occupies this fraction of the canvas's shorter side. Sized to
+    /// leave the backdrop clearly visible — a hero photo whose background is
+    /// just a thin frame around the product looks like a cut-out, not a
+    /// staged shot. Around 60% feels "placed in a scene" while still keeping
+    /// the product the focal point.
+    static let subjectFraction: CGFloat = 0.6
     /// Vertical placement bias. Slightly below center reads as "on a
     /// surface" rather than floating.
-    static let subjectVerticalBias: CGFloat = 0.04
+    static let subjectVerticalBias: CGFloat = 0.06
 
     private let context = CIContext(options: [.useSoftwareRenderer: false])
 

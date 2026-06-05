@@ -128,12 +128,17 @@ final class BackgroundStudio: ObservableObject {
         }
         var candidates: [Candidate] = []
         for suggestion in suggestions {
-            // The Solid mode wants a color token; Pexels/Diffusion want the
-            // free-text query. Fall back to query for both when color is nil.
+            // Each mode wants a different shape of style hint:
+            //   - Solid wants a palette token (falls back to the query if the
+            //     VLM didn't tag a color).
+            //   - Pexels wants 2–4 short search keywords (falls back to the
+            //     long query, which still returns *some* results).
+            //   - Diffusion wants the rich, descriptive scene.
             let style: String = {
                 switch mode {
                 case .solidGradient: return suggestion.color ?? suggestion.query
-                case .pexels, .diffusion: return suggestion.query
+                case .pexels: return suggestion.keywords ?? suggestion.query
+                case .diffusion: return suggestion.query
                 }
             }()
             do {
