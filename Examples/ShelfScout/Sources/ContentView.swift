@@ -1818,13 +1818,20 @@ private struct ListingCard: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            titleBlock
-            descriptionBlock
-            featuresList
-            metaRow
-            tagsRow
-            altText
-            Spacer(minLength: 0)
+            // Scrollable draft body so a long description or many features
+            // don't push the action footer (Generate background / Refine /
+            // Copy) off the bottom of the panel.
+            ScrollView {
+                VStack(alignment: .leading, spacing: 12) {
+                    titleBlock
+                    descriptionBlock
+                    featuresList
+                    metaRow
+                    tagsRow
+                    altText
+                }
+                .frame(maxWidth: .infinity, alignment: .topLeading)
+            }
             backgroundBar
             refineField
             exportButtons
