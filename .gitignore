@@ -36,6 +36,7 @@ NEXT_TASK_DIFFUSION_BACKGROUND.md
 # Local article/draft (not part of the library repo)
 crowd-demo-article.md
 describe-and-point-article.md
+vlmkit-overview-ja.md
 
 # Pexels API key — user must fill PexelsAPIKey.swift locally; never commit it
 Examples/VLMKitDemo/Sources/Backgrounds/PexelsAPIKey.swift
