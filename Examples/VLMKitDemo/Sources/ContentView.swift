@@ -1819,8 +1819,8 @@ private struct ListingCard: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             // Scrollable draft body so a long description or many features
-            // don't push the action footer (Generate background / Refine /
-            // Copy) off the bottom of the panel.
+            // don't push the action footer (Refine / Copy) off the bottom
+            // of the panel.
             ScrollView {
                 VStack(alignment: .leading, spacing: 12) {
                     titleBlock
@@ -1832,7 +1832,13 @@ private struct ListingCard: View {
                 }
                 .frame(maxWidth: .infinity, alignment: .topLeading)
             }
-            backgroundBar
+            // Background Studio shelved — Pexels backgrounds and on-device
+            // HyperSD diffusion both struggle to produce a marketplace shot
+            // that reads well, and the value-add over a desktop tool isn't
+            // strong enough to justify the on-device complexity. Code (the
+            // sheet, the studio, Backgrounds/*) is left intact; re-enable
+            // by un-commenting this single line.
+            // backgroundBar
             refineField
             exportButtons
         }

@@ -28,7 +28,11 @@ final class HyperSDPipeline: @unchecked Sendable {
     private let mlConfiguration: MLModelConfiguration
     private var tokenizer: BPETokenizer?
     private var textEncoder: TextEncoder?
-    private let unet: MiniUnet
+    /// Deferred until `loadResources()` so we can pass the compiled
+    /// `.mlmodelc` URLs to MiniUnet. Compile-on-first-launch is too
+    /// expensive (~5–15 s on a real device) to run on the main actor
+    /// inside `init`.
+    private var unet: MiniUnet?
     private var decoder: Decoder?
 
     init(modelDirectory: URL) throws {
@@ -38,32 +42,42 @@ final class HyperSDPipeline: @unchecked Sendable {
         let config = MLModelConfiguration()
         config.computeUnits = .cpuAndNeuralEngine
         self.mlConfiguration = config
-        self.unet = MiniUnet(
-            chunk1URL: urls.unetChunk1,
-            chunk2URL: urls.unetChunk2,
-            configuration: config
-        )
     }
 
     /// Eagerly load all four models + tokenizer. Called by `generate` if the
-    /// pipeline hasn't been warmed up.
+    /// pipeline hasn't been warmed up. First call on a fresh install will
+    /// also compile each `.mlpackage` into `.mlmodelc` (CoreML's runtime
+    /// requires the compiled form on iOS) and cache the result next to the
+    /// source bundle — subsequent launches skip the compile step.
     func loadResources() throws {
         let urls = try Resources(modelDirectory: modelDirectory)
+        let textEncoderURL = try Self.compileIfNeeded(at: urls.textEncoder)
+        let unetChunk1URL = try Self.compileIfNeeded(at: urls.unetChunk1)
+        let unetChunk2URL = try Self.compileIfNeeded(at: urls.unetChunk2)
+        let decoderURL = try Self.compileIfNeeded(at: urls.decoder)
+
         if tokenizer == nil {
             tokenizer = try BPETokenizer(mergesAt: urls.merges, vocabularyAt: urls.vocab)
         }
         if textEncoder == nil {
             let encoder = TextEncoder(
                 tokenizer: tokenizer!,
-                modelAt: urls.textEncoder,
+                modelAt: textEncoderURL,
                 configuration: mlConfiguration
             )
             try encoder.loadResources()
             textEncoder = encoder
         }
-        try unet.loadResources()
+        if unet == nil {
+            unet = MiniUnet(
+                chunk1URL: unetChunk1URL,
+                chunk2URL: unetChunk2URL,
+                configuration: mlConfiguration
+            )
+        }
+        try unet!.loadResources()
         if decoder == nil {
-            let d = Decoder(modelAt: urls.decoder, configuration: mlConfiguration)
+            let d = Decoder(modelAt: decoderURL, configuration: mlConfiguration)
             try d.loadResources()
             decoder = d
         }
@@ -74,11 +88,42 @@ final class HyperSDPipeline: @unchecked Sendable {
     /// reclaim the ~2 GB of HyperSD weights.
     func unloadResources() {
         textEncoder?.unloadResources()
-        unet.unloadResources()
+        unet?.unloadResources()
         decoder?.unloadResources()
         textEncoder = nil
+        unet = nil
         decoder = nil
         tokenizer = nil
+    }
+
+    // MARK: - Compile cache
+
+    /// Look for a sibling `.mlmodelc` next to `packageURL`; if missing,
+    /// run CoreML's on-device compiler on the `.mlpackage` and move the
+    /// resulting bundle into place.
+    ///
+    /// `MLModel.compileModel(at:)` writes into a temp directory the OS may
+    /// reclaim, so we always move it under `HyperSDModels/` for persistence
+    /// across launches. If the source URL already points at a `.mlmodelc`
+    /// (a future downloader could ship pre-compiled bundles) we return it
+    /// as-is.
+    private static func compileIfNeeded(at packageURL: URL) throws -> URL {
+        let fm = FileManager.default
+        if packageURL.pathExtension == "mlmodelc" { return packageURL }
+        let parent = packageURL.deletingLastPathComponent()
+        let baseName = packageURL.deletingPathExtension().lastPathComponent
+        let compiled = parent.appendingPathComponent(baseName + ".mlmodelc")
+        if fm.fileExists(atPath: compiled.path) { return compiled }
+
+        guard fm.fileExists(atPath: packageURL.path) else {
+            throw HyperSDError.modelsMissing(packageURL.lastPathComponent)
+        }
+        let tempCompiled = try MLModel.compileModel(at: packageURL)
+        if fm.fileExists(atPath: compiled.path) {
+            try? fm.removeItem(at: compiled)
+        }
+        try fm.moveItem(at: tempCompiled, to: compiled)
+        return compiled
     }
 
     /// Generate a single 512×512 image. `negativePrompt` defaults to empty —
@@ -91,7 +136,7 @@ final class HyperSDPipeline: @unchecked Sendable {
         seed: UInt32? = nil
     ) throws -> CGImage {
         try loadResources()
-        guard let textEncoder = textEncoder, let decoder = decoder else {
+        guard let textEncoder = textEncoder, let unet = unet, let decoder = decoder else {
             throw HyperSDError.modelsNotLoaded
         }
 
