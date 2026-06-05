@@ -203,31 +203,51 @@ public enum Listing {
             Then propose \(count) distinct background scenes that suit THIS \
             specific item in a marketplace hero shot.
 
-            Tailor to the item. A vintage film camera wants warm leather / aged \
-            wood / film-era desks. A yoga mat wants light studio floor / wellness \
-            interior / morning sunlight. A houseplant wants ceramic-on-shelf / \
-            terracotta / sunlit windowsill. A luxury watch wants dark stone / \
-            brushed metal / suede. Pick scenes that READ as "this item belongs \
-            here". Do not fall back on generic "studio / wood / cloth" defaults.
+            Tailor to the item AND vary the category. The \(count) scenes must \
+            come from THREE DIFFERENT CATEGORIES (do not return three desks, \
+            three kitchens, three studios):
+              · INDOOR domestic — a kitchen, dining table, living room shelf, \
+                bedside, hallway with character
+              · OUTDOOR or semi-outdoor — a sunlit balcony, garden patio, \
+                park bench, beach mat, café terrace
+              · CHARACTER / VINTAGE — a workshop, writer's study, atelier, \
+                vinyl-record corner, plant-filled nook, retro diner
+
+            Pick PLACES the buyer can imagine the item in, mixed across the \
+            three categories above. Do not fall back on generic "white \
+            studio / wood plank / linen drape" texture defaults.
+
+            For each background, picture a WIDE environmental shot — a room, \
+            interior, or outdoor setting where this item naturally belongs. \
+            NOT a close-up of a single surface (a marble slab, a wood plank, \
+            a fabric drape). The viewer should be able to recognize the place \
+            ("oh, that's a vintage study / a modern kitchen / a sunlit \
+            patio"), not just a texture. Include depth: foreground surface + \
+            background context (a wall, shelves, a window). Leave the \
+            foreground center clear so the product can sit there.
 
             For each background:
-            - "query": a vivid, concrete scene description (8–14 words) naming \
-            the surface, material, setting, mood, AND lighting. This goes \
-            into an image-generation model that thrives on detail. Examples: \
-            "weathered oak workshop bench with afternoon window light, soft \
-            shadows", "smooth cream linen drape with diffused studio light", \
-            "polished dark marble countertop in a modern kitchen, soft top \
-            light". The scene must be EMPTY of any main subject — it is a \
-            backdrop the product will sit on top of, with room in the center \
-            for the product. Do not mention the product itself, people, \
-            faces, text, or logos.
-            - "keywords": the SAME scene as 2–4 short stock-photo search \
-            words (lowercase nouns/adjectives, comma- or space-separated). \
-            This is for a keyword search API (Pexels) that prefers terse \
-            input — long sentences return no matches. Examples for the three \
-            queries above: "oak workshop bench", "cream linen fabric", "dark \
-            marble countertop". No verbs, no lighting words, no commas \
-            inside a single keyword.
+            - "query": an 8–14 word description of the WIDE scene for an \
+            image-generation model. Name the place type (room, interior, \
+            patio…), one or two characterful details (vintage typewriter on \
+            a shelf, hanging plants, brass fixtures…), and the lighting. \
+            Examples: "vintage writer's study with leather books on shelves \
+            and warm desk lamp light", "minimalist scandinavian kitchen with \
+            white tile wall and morning window light", "industrial loft \
+            workshop with brick wall and pendant lights overhead". Keep the \
+            foreground center an empty surface where the product will sit. \
+            Do not mention the product itself, people, faces, text, or logos.
+            - "keywords": 2–4 word stock-photo search query naming the PLACE, \
+            not the texture. Pexels prefers terse input. Use "interior", \
+            "room", "kitchen", "cafe", "garden", "patio", "workshop", \
+            "library" so results come back as wide environment photos. \
+            Examples: "scandinavian kitchen interior", "garden patio table", \
+            "vintage workshop interior". \
+            BANNED words (they return bland white close-ups on Pexels): \
+            "minimalist", "clean", "modern", "white", "studio", "desk", \
+            "office", "nook", "background", "texture", "backdrop". \
+            Also avoid bare material words ("wood", "marble", "linen") — \
+            those return close-up textures.
             - "color": one of \(knownBackgroundColors.joined(separator: ", ")) \
             — the dominant tone of that scene. Pick the closest. Use null \
             only when no tone fits.

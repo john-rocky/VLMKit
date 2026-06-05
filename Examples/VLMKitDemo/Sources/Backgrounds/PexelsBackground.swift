@@ -32,27 +32,31 @@ struct PexelsBackground: BackgroundGenerator {
         canvasSize: CGSize
     ) async throws -> [UIImage] {
         guard PexelsAPIKey.isPresent else { throw PexelsError.missingKey }
-        let urls = try await searchURLs(
-            query: style, count: count, canvasSize: canvasSize
-        )
-        if urls.isEmpty { throw PexelsError.noResults }
+        let pool = try await searchURLs(query: style, canvasSize: canvasSize)
+        if pool.isEmpty { throw PexelsError.noResults }
+        let urls = Self.pickFromPool(pool, count: count)
         return try await downloadImages(urls)
     }
 
     // MARK: - Search
 
-    /// Pexels Photos API: GET /v1/search?query=...&per_page=N&orientation=...
-    /// Picks `landscape`/`portrait`/`square` to roughly match the canvas — the
-    /// compositor does a cover-fill so an off-aspect background still works,
-    /// but matching the orientation gives a tighter cropping margin.
+    /// Pexels Photos API: GET /v1/search?query=...&per_page=15
+    /// We DON'T constrain `orientation`. Pexels has very few square photos,
+    /// and even for a square canvas the cover-fill in `BackgroundCompositor`
+    /// handles landscape/portrait sources fine — restricting orientation
+    /// shrinks the result pool to a handful of low-variety square close-ups.
+    ///
+    /// `per_page` is much larger than needed so the caller can pick past
+    /// the most-relevant (and often blandest — clean white, "minimalist"
+    /// SEO-bait) top results into the more visually-interesting middle
+    /// of the result set. See `pickFromPool`.
     private func searchURLs(
-        query: String, count: Int, canvasSize: CGSize
+        query: String, canvasSize: CGSize
     ) async throws -> [URL] {
         var components = URLComponents(string: "https://api.pexels.com/v1/search")!
         components.queryItems = [
             URLQueryItem(name: "query", value: query),
-            URLQueryItem(name: "per_page", value: String(max(count, 1))),
-            URLQueryItem(name: "orientation", value: orientation(for: canvasSize)),
+            URLQueryItem(name: "per_page", value: String(Self.poolSize)),
         ]
         var request = URLRequest(url: components.url!)
         request.setValue(PexelsAPIKey.key, forHTTPHeaderField: "Authorization")
@@ -67,10 +71,24 @@ struct PexelsBackground: BackgroundGenerator {
         return decoded.photos.compactMap { URL(string: $0.src.large2x ?? $0.src.large ?? $0.src.original) }
     }
 
-    private func orientation(for canvas: CGSize) -> String {
-        if canvas.width > canvas.height * 1.05 { return "landscape" }
-        if canvas.height > canvas.width * 1.05 { return "portrait" }
-        return "square"
+    /// How many photos to ask Pexels for per query. Empirically, the top
+    /// 1–2 results for scene queries are over-stylized white-wall shots;
+    /// the middle of a 15-photo page tends to have more characterful
+    /// environment photos.
+    private static let poolSize = 15
+    /// Skip the first N results. The blandest "minimalist" / clean-white
+    /// shots dominate the top of Pexels' relevance ranking for scene
+    /// queries; positions 3+ are usually richer.
+    private static let skipTop = 3
+
+    /// Pick `count` photos from `pool`, starting at `skipTop` so we land
+    /// past the blandest top hits. Falls back to the start of the pool
+    /// when there aren't enough photos to skip.
+    static func pickFromPool(_ pool: [URL], count: Int) -> [URL] {
+        guard !pool.isEmpty else { return [] }
+        let n = max(count, 1)
+        let start = pool.count > skipTop + n ? skipTop : 0
+        return Array(pool.dropFirst(start).prefix(n))
     }
 
     // MARK: - Download
