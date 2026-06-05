@@ -37,7 +37,7 @@ struct Demo: Identifiable, Sendable {
     // disabled because OCR misses some characters; those demos now use VLM
     // alone for extraction, with no detection boxes on the photo. DocumentQA
     // keeps its OCR HUD (multi-page docs benefit from the spotlight more).
-    static let all: [Demo] = [/* .shelfInventory, */ .crowdAnalytics, /* .roiZoom, */ .describeAndPoint, .documentQA, .receipt, .businessCard, /* .idDocument, */ .listing, .arMeasure]
+    static let all: [Demo] = [/* .shelfInventory, */ .crowdAnalytics, /* .roiZoom, */ .describeAndPoint, .documentQA, .receipt, .businessCard, /* .idDocument, */ /* .listing — Background Studio shelved; pure listing draft alone wasn't a strong enough demo */ .arMeasure]
 }
 
 extension Demo {
