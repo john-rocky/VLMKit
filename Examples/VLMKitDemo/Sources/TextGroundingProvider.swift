@@ -81,4 +81,29 @@ final class TextGroundingProvider: ObservableObject {
         }
         return GroundingResult(boxes: best.mapValues { $0.normRect }, maskImage: result.maskImage)
     }
+
+    /// The single highest-confidence detection across all queries — Plate Reader's
+    /// "top-1": the one most plate/meter/label-like region in the frame, to crop and
+    /// read. Unlike `ground` (top-1 *per class*), this returns one box overall plus the
+    /// query noun that matched (for the callout). Nil when nothing clears the
+    /// (intentionally low) threshold.
+    struct BestRegion {
+        let box: CGRect      // image-normalized, top-left origin
+        let label: String    // the query noun that matched (e.g. "nameplate")
+    }
+
+    func groundBest(cgImage: CGImage, queries: [String], confidenceThreshold: Float = 0.05) async -> BestRegion? {
+        guard let detector, isReady, !queries.isEmpty else { return nil }
+        // Same comma-safety as `ground`: the detector comma-splits the query string,
+        // so a comma inside a query would shift every classIndex off its query.
+        let queryString = queries.map { $0.replacingOccurrences(of: ",", with: " ") }.joined(separator: ", ")
+        let result: TextGroundingDetector.DetectionResult = await Task.detached(priority: .userInitiated) {
+            detector.confidenceThreshold = confidenceThreshold
+            detector.updateQueries(queryString)
+            return detector.detectSync(image: UIImage(cgImage: cgImage))
+        }.value
+        guard let best = result.detections.max(by: { $0.confidence < $1.confidence }) else { return nil }
+        let label = queries.indices.contains(best.classIndex) ? queries[best.classIndex] : "object"
+        return BestRegion(box: best.normRect, label: label)
+    }
 }

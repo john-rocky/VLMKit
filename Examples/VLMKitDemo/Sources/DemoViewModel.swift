@@ -222,6 +222,10 @@ final class DemoViewModel: ObservableObject {
             await analyzeDescribeAndPoint()
             return
         }
+        if selectedDemo.id == Demo.plateReader.id {        // YOLOE crop → VLM structured read
+            await analyzePlateReader(query: query)
+            return
+        }
         if selectedDemo.id == Demo.documentQA.id {         // two-call flow with per-photo cache
             await analyzeDocumentQA(query: query)
             return
@@ -305,6 +309,85 @@ final class DemoViewModel: ObservableObject {
         } catch {
             phase = .failed("Analysis failed: \(error)")
         }
+    }
+
+    // MARK: - Plate Reader
+
+    /// Crop one object with YOLOE, then read it at high resolution. YOLOE finds the
+    /// single most nameplate / meter / label-like region (top-1 across a built-in noun
+    /// set); the VLM then reads a full-res crop of just that region — structured
+    /// {label, value} fields by default (`DocumentQA.extract`), or a free-form answer
+    /// when the user typed a prompt (`ROIZoom.detail`). Replaces the old MobileSAM tap
+    /// ROI Zoom (SAM was unstable).
+    ///
+    /// The high-res win is ROI Zoom's: cropping the region from the original image
+    /// before the backend's pixel-budget downscale spends the whole budget on the plate,
+    /// so small stamped text and gauge markings stay legible.
+    private func analyzePlateReader(query: String) async {
+        guard let uiImage = capturedImage,
+              let vlmImage = VLMImage(uiImage: uiImage.normalizedUp()) else {
+            phase = .failed("Could not read the image.")
+            return
+        }
+        phase = .running(done: 0, total: 0)
+        await textGroundingProvider.loadIfNeeded()
+        // YOLOE picks the single most plate-like region. If nothing clears the (low)
+        // threshold, fall back to reading the whole frame so the demo still produces a
+        // result — no box is drawn in that case.
+        let region = await textGroundingProvider.groundBest(
+            cgImage: vlmImage.cgImage, queries: Self.plateQueries
+        )
+        // Pad the (tight) YOLOE box a little so stamped border text isn't clipped; show
+        // the same padded box we read, so the overlay matches what the VLM saw.
+        let roi = region.map { Self.paddedROI($0.box) } ?? CGRect(x: 0, y: 0, width: 1, height: 1)
+        let detections: [Detection] = region.map {
+            [Detection(key: "plate-region", label: $0.label.capitalized, detail: nil, box: roi)]
+        } ?? []
+        do {
+            let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
+            if trimmed.isEmpty {
+                // Default: read the cropped plate into structured {label, value} fields.
+                let crop = vlmImage.cropped(to: roi)
+                let extraction = try await DocumentQA.extract(on: crop, runner: runner)
+                let rows = extraction.fields.enumerated().map { index, field in
+                    AggregateRow(key: "plate-\(index)", label: field.label, trailing: nil, subtitle: field.value)
+                }
+                phase = .result(DemoResult(
+                    summary: nil,
+                    headline: .init(value: extraction.fields.count, unit: "fields"),
+                    rows: rows,
+                    detections: detections
+                ))
+            } else {
+                // A typed prompt switches to a free-form answer about the cropped region.
+                let answer = try await ROIZoom.detail(on: vlmImage, roi: roi, runner: runner, question: trimmed)
+                phase = .result(DemoResult(
+                    summary: "Q: \(trimmed)\nA: \(answer)",
+                    headline: .init(value: 1, unit: "region"),
+                    rows: [],
+                    detections: detections
+                ))
+            }
+            resultCount += 1
+        } catch {
+            phase = .failed("Analysis failed: \(error)")
+        }
+    }
+
+    /// The built-in YOLOE noun set Plate Reader searches for — plate / meter / label /
+    /// gauge-like things. The single highest-confidence hit across all of them is the
+    /// region cropped and read. Tuned for industrial nameplates, caution plates, rating
+    /// plates, and gauges.
+    private static let plateQueries = [
+        "nameplate", "rating plate", "caution plate", "label", "sticker",
+        "sign", "gauge", "meter", "display", "panel", "placard"
+    ]
+
+    /// Expand a tight YOLOE box by a small margin (clamped to the image) so stamped
+    /// border text on a plate isn't clipped from the high-res crop.
+    private static func paddedROI(_ box: CGRect, by fraction: CGFloat = 0.04) -> CGRect {
+        box.insetBy(dx: -box.width * fraction, dy: -box.height * fraction)
+            .intersection(CGRect(x: 0, y: 0, width: 1, height: 1))
     }
 
     // MARK: - Document QA

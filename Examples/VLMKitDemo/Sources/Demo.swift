@@ -30,14 +30,16 @@ struct Demo: Identifiable, Sendable {
     // kept around (see the `.shelfInventory` extension below) until we redesign it
     // around a single VLM call that plays to the model's qualitative strengths.
     // Demos kept in code but excluded from the menu (uncomment to restore):
-    //  - `.roiZoom` / `.idDocument`: owner — "weak impact." ROI Zoom's MobileSAM
-    //    (SAMKit) dep is now optional via `#if canImport(SAMKit)`, so the build
-    //    works without it.
+    //  - `.idDocument`: owner — "weak impact."
+    // The old MobileSAM tap-to-analyze ROI Zoom was replaced by the run-once
+    // `.plateReader` (YOLOE crop + VLM read) — MobileSAM was unstable. The SAM tap
+    // path (`SAMROIProvider` + the tap methods in `DemoViewModel`) is now dormant:
+    // no tap-to-analyze demo ships, so it stays as code but is never exercised.
     // Receipt + BusinessCard: Vision OCR grounding (box-on-text overlay) is
     // disabled because OCR misses some characters; those demos now use VLM
     // alone for extraction, with no detection boxes on the photo. DocumentQA
     // keeps its OCR HUD (multi-page docs benefit from the spotlight more).
-    static let all: [Demo] = [/* .shelfInventory, */ .crowdAnalytics, /* .roiZoom, */ .describeAndPoint, .documentQA, .receipt, .businessCard, /* .idDocument, */ /* .listing — Background Studio shelved; pure listing draft alone wasn't a strong enough demo */ .arMeasure]
+    static let all: [Demo] = [/* .shelfInventory, */ .crowdAnalytics, .plateReader, .describeAndPoint, .documentQA, .receipt, .businessCard, /* .idDocument, */ /* .listing — Background Studio shelved; pure listing draft alone wasn't a strong enough demo */ .arMeasure]
 }
 
 extension Demo {
@@ -73,16 +75,21 @@ extension Demo {
         }
     )
 
-    /// P5 — ROI Zoom. A whole-image overview, then tap an object: MobileSAM (Apple
-    /// on-device) localizes it, and the VLM reads a high-res crop of just that region.
-    /// Tap-to-analyze, so it has no run-once pass; the shell drives it via the SAM
-    /// provider. (Step 2: SAM tap → box. The VLM overview/detail passes land in step 3.)
-    static let roiZoom = Demo(
-        id: "roi",
-        name: "ROI Zoom",
+    /// "Plate Reader" — crop one object with YOLOE, then read it at high resolution.
+    /// YOLOE (Apple-framework open-vocab detection, app-side) finds the single most
+    /// nameplate / meter / label-like region, and the VLM reads a full-res crop of just
+    /// that region: structured {label, value} fields by default, or a free-form answer
+    /// when the user types a prompt. Targets industrial nameplates, caution plates, and
+    /// gauges — read and structured on-device. Replaces the old MobileSAM tap-to-analyze
+    /// ROI Zoom (SAM was unstable); run-once now, and — like Describe & Point — it needs
+    /// the grounding provider, so the shell drives it through the view model, not this
+    /// generic `run` closure (which has no provider).
+    static let plateReader = Demo(
+        id: "plate",
+        name: "Plate Reader",
         gridDetail: nil,
-        queryPlaceholder: nil,
-        isTapToAnalyze: true,
+        queryPlaceholder: "Optional: ask about the plate (e.g. What is the max pressure?)",
+        isTapToAnalyze: false,
         run: nil
     )
 
