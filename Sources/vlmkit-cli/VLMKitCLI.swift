@@ -13,6 +13,7 @@ import VLMKit
 ///   vlmkit-cli roizoom   <image> [--rect x,y,w,h] [--ask "Q"] P5 ROI zoom: overview + hi-res detail → JSON
 ///   vlmkit-cli form      <image> --fields "a,b,c"      α7 form extraction → JSON
 ///   vlmkit-cli docqa     <image> [--ask "Q"] [--max N] Document QA: auto-extract + free-form Q → JSON
+///   vlmkit-cli platereader <image> [--max N]           Plate Reader: read a nameplate/meter → JSON {fields}
 ///   vlmkit-cli checklist <image> --items "a;b;c"       α11 checklist → JSON
 ///   vlmkit-cli bench     <image> [--runs N]            decode-speed benchmark
 ///
@@ -39,6 +40,7 @@ struct VLMKitCLI {
         case "roizoom": try await roizoom(options)
         case "form": try await form(options)
         case "docqa": try await docqa(options)
+        case "platereader": try await platereader(options)
         case "checklist": try await checklist(options)
         case "bench": try await bench(options)
         case "help", "-h", "--help": printUsage()
@@ -163,6 +165,20 @@ struct VLMKitCLI {
         }
     }
 
+    /// Plate Reader — read every reading on a data plate / nameplate / meter / gauge
+    /// as `{label, value}` pairs (value required, label inferred when not printed).
+    /// In-app YOLOE crops the plate first; this Mac smoke runs the read on the whole
+    /// image (pre-crop it yourself) to check that values come back populated.
+    static func platereader(_ options: Options) async throws {
+        let image = try loadImage(options)
+        let runner = try await makeRunner(options)
+        let maxFields = options.int("max", default: 16)
+        log("Reading plate (up to \(maxFields) field(s))…")
+        let fields = try await PlateReader.read(on: image, runner: runner, maxFields: maxFields)
+        struct Out: Encodable { let fields: [DocumentField] }
+        printJSON(Out(fields: fields))
+    }
+
     static func checklist(_ options: Options) async throws {
         let image = try loadImage(options)
         guard let itemsArg = options.string("items") else { throw CLIError.missing("--items \"req1;req2;…\"") }
@@ -257,6 +273,7 @@ struct VLMKitCLI {
           vlmkit-cli roizoom   <image> [--rect x,y,w,h] [--ask "Q"] P5 ROI zoom: overview + hi-res detail → JSON
           vlmkit-cli form      <image> --fields "a,b,c"      α7 Form extraction → JSON
           vlmkit-cli docqa     <image> [--ask "Q"] [--max N] Document QA: auto-extract + free-form Q → JSON
+          vlmkit-cli platereader <image> [--max N]           Plate Reader: read a nameplate/meter → JSON {fields}
           vlmkit-cli checklist <image> --items "a;b;c"       α11 Checklist → JSON
           vlmkit-cli bench     <image> [--runs N]            Decode-speed benchmark
 

@@ -347,14 +347,16 @@ final class DemoViewModel: ObservableObject {
             let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
             if trimmed.isEmpty {
                 // Default: read the cropped plate into structured {label, value} fields.
+                // PlateReader (not DocumentQA) — plates stamp values with no printed
+                // field name, so the value is required and the label is inferred.
                 let crop = vlmImage.cropped(to: roi)
-                let extraction = try await DocumentQA.extract(on: crop, runner: runner)
-                let rows = extraction.fields.enumerated().map { index, field in
+                let fields = try await PlateReader.read(on: crop, runner: runner)
+                let rows = fields.enumerated().map { index, field in
                     AggregateRow(key: "plate-\(index)", label: field.label, trailing: nil, subtitle: field.value)
                 }
                 phase = .result(DemoResult(
                     summary: nil,
-                    headline: .init(value: extraction.fields.count, unit: "fields"),
+                    headline: .init(value: fields.count, unit: "fields"),
                     rows: rows,
                     detections: detections
                 ))
