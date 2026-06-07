@@ -174,9 +174,9 @@ struct VLMKitCLI {
         let runner = try await makeRunner(options)
         let maxFields = options.int("max", default: 16)
         log("Reading plate (up to \(maxFields) field(s))…")
-        let fields = try await PlateReader.read(on: image, runner: runner, maxFields: maxFields)
-        struct Out: Encodable { let fields: [DocumentField] }
-        printJSON(Out(fields: fields))
+        let reading = try await PlateReader.read(on: image, runner: runner, maxFields: maxFields)
+        struct Out: Encodable { let subject: String; let fields: [DocumentField] }
+        printJSON(Out(subject: reading.subject, fields: reading.fields))
     }
 
     static func checklist(_ options: Options) async throws {

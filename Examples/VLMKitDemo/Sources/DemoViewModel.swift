@@ -346,17 +346,18 @@ final class DemoViewModel: ObservableObject {
         do {
             let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
             if trimmed.isEmpty {
-                // Default: read the cropped plate into structured {label, value} fields.
-                // PlateReader (not DocumentQA) — plates stamp values with no printed
-                // field name, so the value is required and the label is inferred.
+                // Default: autonomously identify the object and read it into structured
+                // {label, value} fields. PlateReader (not DocumentQA) — plates stamp
+                // values with no printed field name, so the value is required and the
+                // label is inferred; `subject` is the VLM's own "what is this".
                 let crop = vlmImage.cropped(to: roi)
-                let fields = try await PlateReader.read(on: crop, runner: runner)
-                let rows = fields.enumerated().map { index, field in
+                let reading = try await PlateReader.read(on: crop, runner: runner)
+                let rows = reading.fields.enumerated().map { index, field in
                     AggregateRow(key: "plate-\(index)", label: field.label, trailing: nil, subtitle: field.value)
                 }
                 phase = .result(DemoResult(
-                    summary: nil,
-                    headline: .init(value: fields.count, unit: "fields"),
+                    summary: reading.subject.isEmpty ? nil : reading.subject,
+                    headline: .init(value: reading.fields.count, unit: "fields"),
                     rows: rows,
                     detections: detections
                 ))
