@@ -41,6 +41,7 @@ struct VLMKitCLI {
         case "form": try await form(options)
         case "docqa": try await docqa(options)
         case "platereader": try await platereader(options)
+        case "platebatch": try await platebatch(options)
         case "checklist": try await checklist(options)
         case "bench": try await bench(options)
         case "help", "-h", "--help": printUsage()
@@ -177,6 +178,28 @@ struct VLMKitCLI {
         let reading = try await PlateReader.read(on: image, runner: runner, maxFields: maxFields)
         struct Out: Encodable { let subject: String; let fields: [DocumentField] }
         printJSON(Out(subject: reading.subject, fields: reading.fields))
+    }
+
+    /// Batch Plate Reader over a directory — load the model once, read every image.
+    /// Tuning/regression helper so the PlateReader prompt can be exercised across a
+    /// whole corpus of meters/plates without paying the model-load cost per image.
+    static func platebatch(_ options: Options) async throws {
+        guard let dir = options.positional.first else { throw CLIError.missing("<dir>") }
+        let runner = try await makeRunner(options)
+        let fm = FileManager.default
+        let exts: Set<String> = ["jpg", "jpeg", "png", "heic", "webp"]
+        let urls = try fm.contentsOfDirectory(at: URL(fileURLWithPath: dir), includingPropertiesForKeys: nil)
+            .filter { exts.contains($0.pathExtension.lowercased()) }
+            .sorted { $0.lastPathComponent < $1.lastPathComponent }
+        struct Out: Encodable { let file: String; let subject: String; let fields: [DocumentField] }
+        for url in urls {
+            guard let image = try? VLMImage(contentsOf: url) else {
+                log("=== \(url.lastPathComponent): could not load"); continue
+            }
+            log("=== \(url.lastPathComponent)")
+            let reading = try await PlateReader.read(on: image, runner: runner)
+            printJSON(Out(file: url.lastPathComponent, subject: reading.subject, fields: reading.fields))
+        }
     }
 
     static func checklist(_ options: Options) async throws {

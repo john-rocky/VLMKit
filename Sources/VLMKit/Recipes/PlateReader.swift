@@ -47,37 +47,42 @@ public enum PlateReader {
     ) async throws -> PlateReading {
         let task = VLMTask<ReadingRaw>(
             instruction: """
-            You are reading the data plate, nameplate, rating plate, caution plate, \
-            meter, gauge, or measuring device shown in this image — usually a cropped \
-            close-up.
+            You are reading a measuring instrument or its plate/label shown in this \
+            image — a meter, gauge, dial, nameplate, rating plate, caution plate, or \
+            product label, usually a cropped close-up.
 
-            First, in "subject", say what the object is in a few words — e.g. \
-            "residential gas meter", "electricity meter", "water meter", "pressure \
-            gauge", "motor nameplate", "appliance rating plate".
+            First, in "subject", name what it is precisely, using its scale or unit to \
+            tell instruments apart — e.g. "pressure gauge", "thermometer", "voltmeter", \
+            "ammeter", "residential gas meter", "water meter", "electricity meter", \
+            "motor nameplate", "chemical product label".
 
-            Then in "fields", read EVERY reading, marking, rating, and specification on \
-            it as label/value pairs.
+            Then, in "fields", read it as label/value pairs:
+            - If the instrument shows a CURRENT reading, give it as ONE field labeled \
+            "Reading" (or "Index") with its unit — for an analog dial, estimate where \
+            the NEEDLE points on the numbered scale (an approximate value is fine); for \
+            a mechanical counter or digital display, copy the number (e.g. "415 V", \
+            "13 bar", "10912 m³").
+            - Then every printed specification and marking: manufacturer/brand, model, \
+            serial number, measuring range, unit, accuracy class, standards, ratings, \
+            dates.
 
             For each field:
-            - "value": the reading itself, copied verbatim exactly as printed, stamped, \
-            engraved, or shown on the dial — numbers, units, codes, model names, dates. \
-            This is REQUIRED and must never be empty.
-            - "label": the printed field name shown next to the value. If there is NO \
-            printed field name, infer a short, accurate label (e.g. "Reading", "Index", \
-            "Meter number", "Model", "Serial number", "Max flow", "Voltage", \
-            "Manufacturer", "Date").
+            - "value": copied verbatim exactly as printed, stamped, or shown. This is \
+            REQUIRED and must never be empty.
+            - "label": the printed field name shown next to the value, or a short \
+            inferred label when none is printed (e.g. "Manufacturer", "Model", "Range", \
+            "Accuracy class", "Serial number", "Date").
 
             Rules:
-            - For a meter or gauge, the single most important field is the CURRENT \
-            reading shown on the counter or dial — always include it (label "Reading" or \
-            "Index", value the number with its unit, e.g. "01234 m³").
-            - Every entry MUST have a non-empty value. Never output a blank value, and \
-            never just repeat the label as the value.
-            - Include standalone values that have no printed field name; give them an \
-            inferred label.
-            - For a warning or caution line, use a short label like "Warning" with the \
-            text as the value.
-            - Copy only what you can actually read; do not invent or guess.
+            - Give only ONE "Reading" — the single current measured value. Do NOT list \
+            the scale numbers, tick marks, or graduations (0, 20, 40, 60, …) as fields.
+            - Do NOT repeat the same text as the value of several different fields, and \
+            do NOT invent a manufacturer, model, or serial you cannot clearly read — \
+            omit what is not there.
+            - Every entry MUST have a non-empty value; never just repeat the label as \
+            the value.
+            - For a warning or caution line, use the label "Warning" with the text as \
+            the value.
             - Return at most \(maxFields) fields — the most important ones if there are more.
             - Output one JSON object in the shape specified.
             """,

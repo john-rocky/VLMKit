@@ -383,7 +383,8 @@ final class DemoViewModel: ObservableObject {
     /// plates, and gauges.
     private static let plateQueries = [
         "nameplate", "rating plate", "caution plate", "label", "sticker",
-        "sign", "gauge", "meter", "display", "panel", "placard"
+        "sign", "gauge", "pressure gauge", "meter", "gas meter", "dial",
+        "thermometer", "display", "counter", "panel", "placard"
     ]
 
     /// Expand a tight YOLOE box by a small margin (clamped to the image) so stamped
