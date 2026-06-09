@@ -79,6 +79,80 @@ enum JSONExtraction {
         }
     }
 
+    /// Best-effort structural repair of the most common quantized-model JSON breakage:
+    /// the opening `{` dropped on array elements (`[{...}, "k":v}, "k":v}]`) and/or a
+    /// truncated tail. Walks the first JSON span tracking array/object context, inserts
+    /// `{` whenever a key appears directly inside an array (an element that lost its
+    /// brace), drops any truncated tail past the last close, and balances unclosed
+    /// braces. Returns nil if there's no JSON. Meant only as a fallback after strict
+    /// decoding fails — valid JSON has no keys at array level, so it is returned intact.
+    static func repaired(from text: String) -> String? {
+        let chars = Array(strippingCodeFence(text))
+        guard let start = chars.firstIndex(where: { $0 == "{" || $0 == "[" }),
+              let end = chars.lastIndex(where: { $0 == "}" || $0 == "]" }),
+              end >= start else { return nil }
+
+        var out: [Character] = []
+        var stack: [Character] = []          // "{" object · "[" array · "i" inserted object
+        var inString = false
+        var escaped = false
+        var i = start
+        while i <= end {
+            let c = chars[i]
+            if inString {
+                out.append(c)
+                if escaped { escaped = false }
+                else if c == "\\" { escaped = true }
+                else if c == "\"" { inString = false }
+                i += 1
+                continue
+            }
+            switch c {
+            case "\"":
+                // A key (string followed by ':') directly inside an array means an
+                // object element lost its opening brace — put it back.
+                if stack.last == "[", stringIsKey(chars, from: i, upTo: end) {
+                    out.append("{")
+                    stack.append("i")
+                }
+                out.append(c); inString = true
+            case "{": out.append(c); stack.append("{")
+            case "[": out.append(c); stack.append("[")
+            case "}":
+                out.append(c)
+                if stack.last == "{" || stack.last == "i" { stack.removeLast() }
+            case "]":
+                if stack.last == "i" { out.append("}"); stack.removeLast() }
+                out.append(c)
+                if stack.last == "[" { stack.removeLast() }
+            default:
+                // An inserted object closes on `}` (the model keeps the closing brace
+                // even when it drops the opening one); commas inside it are normal.
+                out.append(c)
+            }
+            i += 1
+        }
+        while let top = stack.popLast() { out.append(top == "[" ? "]" : "}") }
+        return String(out)
+    }
+
+    /// Whether the string literal starting at `quoteIndex` is a JSON key — i.e. its
+    /// closing quote is followed (after whitespace) by `:`.
+    private static func stringIsKey(_ chars: [Character], from quoteIndex: Int, upTo end: Int) -> Bool {
+        var j = quoteIndex + 1
+        var escaped = false
+        while j <= end {
+            let c = chars[j]
+            if escaped { escaped = false }
+            else if c == "\\" { escaped = true }
+            else if c == "\"" { break }
+            j += 1
+        }
+        j += 1
+        while j <= end, chars[j] == " " || chars[j] == "\n" || chars[j] == "\t" || chars[j] == "\r" { j += 1 }
+        return j <= end && chars[j] == ":"
+    }
+
     /// Decode JSON string escapes (`\"`, `\\`, `\n`, `\uXXXX`, …) in an already-extracted
     /// string body. Best-effort: returns the input unchanged if it has no escapes or
     /// can't be parsed.

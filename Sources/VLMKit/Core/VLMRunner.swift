@@ -33,6 +33,14 @@ public struct VLMRunner: Sendable {
                let decoded = try? JSONDecoder().decode(Output.self, from: data) {
                 return decoded
             }
+            // Quantized models sometimes emit structurally broken JSON (a dropped `{`
+            // on array elements, a truncated tail). Try a structural repair before
+            // spending a retry — only reached when strict decoding already failed.
+            if let repaired = JSONExtraction.repaired(from: result.text),
+               let data = repaired.data(using: .utf8),
+               let decoded = try? JSONDecoder().decode(Output.self, from: data) {
+                return decoded
+            }
             correction = "Your previous response could not be parsed as the requested JSON. Output ONLY the JSON value. "
         }
         throw VLMKitError.decodingFailed(raw: lastText)
