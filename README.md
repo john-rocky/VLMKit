@@ -13,6 +13,12 @@ One VLM query  ──▶  decompose (Vision / grid / LiDAR)  ──▶  N VLM ca
 
 ## Contents
 
+### Plate Reader
+
+An on-device detector crops the plate or meter; the VLM identifies the device and reads its fields into structured key/values.
+
+<img src="https://github.com/user-attachments/assets/cb69f768-54c3-44c5-86f4-db02ab261f14" width="170"> <img src="https://github.com/user-attachments/assets/3ea35c4f-5267-4ea0-b29f-19cc63198b36" width="170"> <img src="https://github.com/user-attachments/assets/e6bfdb14-e09a-4d18-97d5-7ba560978a61" width="170"> <img src="https://github.com/user-attachments/assets/c04d9a9a-1ebb-4690-b917-5ed50b77288c" width="170">
+
 ### Describe & Point
 
 The VLM captions the image; an on-device detector boxes each named object.
