@@ -516,7 +516,8 @@ struct ContentView: View {
                     summaryPending: vm.roiSummaryPending,
                     selectedKey: selectedKey,
                     onTapKey: handleTap,
-                    highlightsCaptionMentions: vm.selectedDemo.id == Demo.describeAndPoint.id
+                    highlightsCaptionMentions: vm.selectedDemo.id == Demo.describeAndPoint.id,
+                    compactFields: vm.selectedDemo.id == Demo.plateReader.id
                 )
             }
         case .failed(let message):
@@ -1152,33 +1153,80 @@ private struct ResultView: View {
     /// sync with its spotlighted box. Off for other demos (ROI Zoom's overview has no
     /// in-caption mentions to highlight).
     var highlightsCaptionMentions: Bool = false
+    /// Plate Reader: render the many short label/value fields as a dense two-column grid
+    /// under a one-line header, so the whole result fits one screen without shrinking the
+    /// photo. Off for the other demos (which lead with a headline or a long overview).
+    var compactFields: Bool = false
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            // ROI Zoom leads with the pinned overview; the count demos lead with the headline.
-            if result.summary != nil || summaryPending {
-                overviewCard
-                if !result.rows.isEmpty {
-                    Text("\(result.headline.value) \(result.headline.unit)")
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
-                }
+        VStack(alignment: .leading, spacing: compactFields ? 6 : 8) {
+            header
+            if compactFields {
+                compactGrid
             } else {
-                HStack(alignment: .firstTextBaseline, spacing: 6) {
-                    Text("\(result.headline.value)").font(.system(size: 40, weight: .bold))
-                    Text(result.headline.unit).foregroundStyle(.secondary)
-                }
-            }
-            ScrollView {
-                VStack(spacing: 0) {
-                    ForEach(result.rows) { row in
-                        rowView(row)
-                        Divider()
+                ScrollView {
+                    VStack(spacing: 0) {
+                        ForEach(result.rows) { row in
+                            rowView(row)
+                            Divider()
+                        }
                     }
                 }
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+    }
+
+    /// The block above the rows. Compact mode collapses the subject + count onto one
+    /// line (no big overview card) to reclaim vertical space for a dense field list.
+    @ViewBuilder private var header: some View {
+        if compactFields {
+            HStack(spacing: 6) {
+                if let summary = result.summary, !summary.isEmpty {
+                    Text(summary).font(.subheadline).fontWeight(.semibold).lineLimit(1)
+                    Text("·").foregroundStyle(.secondary)
+                }
+                Text("\(result.headline.value) \(result.headline.unit)")
+                    .font(.subheadline).foregroundStyle(.secondary)
+                Spacer(minLength: 0)
+            }
+        } else if result.summary != nil || summaryPending {
+            overviewCard
+            if !result.rows.isEmpty {
+                Text("\(result.headline.value) \(result.headline.unit)")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+            }
+        } else {
+            HStack(alignment: .firstTextBaseline, spacing: 6) {
+                Text("\(result.headline.value)").font(.system(size: 40, weight: .bold))
+                Text(result.headline.unit).foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    /// Dense two-column field grid for short label/value pairs (Plate Reader): fits a
+    /// nameplate's ~16 fields in one screen without shrinking the photo. Long values
+    /// wrap to two lines within their cell; the ScrollView stays as a safety net.
+    @ViewBuilder private var compactGrid: some View {
+        ScrollView {
+            LazyVGrid(
+                columns: [GridItem(.flexible(), spacing: 10, alignment: .topLeading),
+                          GridItem(.flexible(), spacing: 10, alignment: .topLeading)],
+                alignment: .leading, spacing: 7
+            ) {
+                ForEach(result.rows) { row in
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text(row.label)
+                            .font(.caption2).foregroundStyle(.secondary).lineLimit(1)
+                        Text(row.subtitle ?? "")
+                            .font(.footnote).fontWeight(.medium)
+                            .lineLimit(2).fixedSize(horizontal: false, vertical: true)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
+            }
+        }
     }
 
     /// The pinned whole-image overview (ROI Zoom stage 1): a spinner while it runs,
