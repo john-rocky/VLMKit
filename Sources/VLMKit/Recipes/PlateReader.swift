@@ -89,10 +89,46 @@ public enum PlateReader {
             jsonHint: #"{"subject": "what this object is", "fields": [{"label": "field name", "value": "reading"}]}"#,
             options: GenerationOptions(maxTokens: 1024, temperature: 0.0)
         )
-        let raw = try await runner.run(task, images: [image])
+        do {
+            let raw = try await runner.run(task, images: [image])
+            return PlateReading(
+                subject: (raw.subject ?? "").trimmingCharacters(in: .whitespacesAndNewlines),
+                fields: clean(raw.fields, maxFields: maxFields)
+            )
+        } catch VLMKitError.decodingFailed(let rawText) {
+            // The shipped 4-bit model occasionally emits malformed JSON — typically it
+            // drops the opening `{` on array elements, so strict decoding rejects the
+            // whole response. Recover the subject + flat label/value list by scanning
+            // the raw text, which doesn't depend on the brace structure being correct.
+            return tolerantReading(from: rawText, maxFields: maxFields)
+        }
+    }
+
+    /// Recover a `PlateReading` from a malformed-JSON response by scanning ordered
+    /// `subject` / `label` / `value` string entries. Each `label` is paired with the
+    /// next `value`; a dangling trailing `label` (truncated output) is dropped by
+    /// `clean`. Order is preserved, so the fields still read top-to-bottom.
+    static func tolerantReading(from raw: String, maxFields: Int) -> PlateReading {
+        let entries = JSONExtraction.orderedStringEntries(keys: ["subject", "label", "value"], in: raw)
+        var subject = ""
+        var fields: [ReadingRaw.Field] = []
+        var pendingLabel: String?
+        for (key, value) in entries {
+            switch key {
+            case "subject":
+                if subject.isEmpty { subject = value }
+            case "label":
+                pendingLabel = value
+            case "value":
+                fields.append(ReadingRaw.Field(label: pendingLabel, value: value))
+                pendingLabel = nil
+            default:
+                break
+            }
+        }
         return PlateReading(
-            subject: (raw.subject ?? "").trimmingCharacters(in: .whitespacesAndNewlines),
-            fields: clean(raw.fields, maxFields: maxFields)
+            subject: subject.trimmingCharacters(in: .whitespacesAndNewlines),
+            fields: clean(fields, maxFields: maxFields)
         )
     }
 

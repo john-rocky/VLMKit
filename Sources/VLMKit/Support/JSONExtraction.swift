@@ -59,4 +59,34 @@ enum JSONExtraction {
         }
         return nil
     }
+
+    /// All `"key": "value"` string entries (for the given keys), in document order.
+    /// Tolerant of broken JSON structure — missing braces, truncation, trailing junk —
+    /// so a recipe can recover a flat key/value list when a quantized model emits
+    /// malformed JSON that strict decoding rejects (e.g. dropping the `{` on array
+    /// elements). Values are JSON-unescaped.
+    static func orderedStringEntries(keys: Set<String>, in text: String) -> [(key: String, value: String)] {
+        guard !keys.isEmpty else { return [] }
+        let keyAlternation = keys
+            .map { NSRegularExpression.escapedPattern(for: $0) }
+            .joined(separator: "|")
+        let pattern = "\"(\(keyAlternation))\"\\s*:\\s*\"((?:[^\"\\\\]|\\\\.)*)\""
+        guard let regex = try? NSRegularExpression(pattern: pattern) else { return [] }
+        let ns = text as NSString
+        return regex.matches(in: text, range: NSRange(location: 0, length: ns.length)).map { match in
+            (key: ns.substring(with: match.range(at: 1)),
+             value: unescapeJSONString(ns.substring(with: match.range(at: 2))))
+        }
+    }
+
+    /// Decode JSON string escapes (`\"`, `\\`, `\n`, `\uXXXX`, …) in an already-extracted
+    /// string body. Best-effort: returns the input unchanged if it has no escapes or
+    /// can't be parsed.
+    private static func unescapeJSONString(_ body: String) -> String {
+        guard body.contains("\\") else { return body }
+        guard let data = "\"\(body)\"".data(using: .utf8),
+              let decoded = try? JSONSerialization.jsonObject(with: data, options: [.fragmentsAllowed]) as? String
+        else { return body }
+        return decoded
+    }
 }
